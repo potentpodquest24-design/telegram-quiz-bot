@@ -52,22 +52,35 @@ async def user_chapter(update, context):
     context.user_data["subject"] = subject
 
     db = load_json(DB_FILE)
-    buttons = [[InlineKeyboardButton(c, callback_data=f"quiz_{c}")] for c in db[subject].keys()]
+    buttons = [[InlineKeyboardButton(c, callback_data=f"count_{c}")] for c in db[subject].keys()]
     await query.edit_message_text("📖 Chapter પસંદ કરો", reply_markup=InlineKeyboardMarkup(buttons))
+
+async def select_count(update, context):
+    query = update.callback_query
+    await query.answer()
+    chapter = query.data.split("_",1)[1]
+    context.user_data["chapter"] = chapter
+
+    keyboard = [
+        [InlineKeyboardButton("📝 10 Questions", callback_data="quiz_10")],
+        [InlineKeyboardButton("📝 20 Questions", callback_data="quiz_20")]
+    ]
+    await query.edit_message_text("કેટલા પ્રશ્ન લેવાં છે?", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def start_quiz(update, context):
     query = update.callback_query
     await query.answer()
 
-    chapter = query.data.split("_",1)[1]
+    total_q = int(query.data.split("_")[1])
     subject = context.user_data["subject"]
+    chapter = context.user_data["chapter"]
 
     db = load_json(DB_FILE)
     questions = db[subject][chapter]
     random.shuffle(questions)
 
     user_sessions[query.from_user.id] = {
-        "questions": questions[:10],
+        "questions": questions[:total_q],
         "score": 0,
         "qno": 0
     }
@@ -81,7 +94,10 @@ async def send_poll(query, context):
     if session["qno"] >= len(session["questions"]):
         score = session["score"]
         keyboard = [[InlineKeyboardButton("🔁 Restart", callback_data="user_subject")]]
-        await query.message.reply_text(f"🎉 Quiz Finished\n\nScore: {score}/{len(session['questions'])}", reply_markup=InlineKeyboardMarkup(keyboard))
+        await query.message.reply_text(
+            f"🎉 Quiz Finished!\n\nતમારું સ્કોર: {score}/{len(session['questions'])}",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
         return
 
     q = session["questions"][session["qno"]]
@@ -139,13 +155,13 @@ async def admin_buttons(update, context):
     admin_sessions[query.from_user.id] = data
 
     if data == "add_subject":
-        await query.edit_message_text("✍ Subject નું નામ મોકલો")
+        await query.edit_message_text("✍ Subject નામ મોકલો")
 
     elif data == "add_chapter":
-        await query.edit_message_text("✍ Format: Subject Chapter\nExample: Science Physics")
+        await query.edit_message_text("✍ Format:\nSubject | Chapter")
 
     elif data == "add_question":
-        await query.edit_message_text("✍ Format:\nSubject Chapter Question | A | B | C | D | 0-3")
+        await query.edit_message_text("✍ Format:\nSubject | Chapter | Question | A | B | C | D | 0-3")
 
     elif data == "total_users":
         users = load_json(USER_FILE)
@@ -162,25 +178,25 @@ async def admin_text(update: Update, context):
     text = update.message.text
     db = load_json(DB_FILE)
 
+    parts = [p.strip() for p in text.split("|")]
+
     if mode == "add_subject":
-        db[text] = {}
+        db[parts[0]] = {}
         save_json(DB_FILE,db)
         await update.message.reply_text("✅ Subject Added")
 
     elif mode == "add_chapter":
-        sub, chap = text.split()
-        db.setdefault(sub,{})[chap] = []
+        db.setdefault(parts[0],{})[parts[1]] = []
         save_json(DB_FILE,db)
         await update.message.reply_text("✅ Chapter Added")
 
     elif mode == "add_question":
-        sub, chap, rest = text.split(" ",2)
-        parts = rest.split("|")
-        q = parts[0].strip()
-        opts = [p.strip() for p in parts[1:5]]
-        ans = int(parts[5])
-
-        db[sub][chap].append({"question":q,"options":opts,"answer":ans})
+        q = {
+            "question": parts[2],
+            "options": parts[3:7],
+            "answer": int(parts[7])
+        }
+        db[parts[0]][parts[1]].append(q)
         save_json(DB_FILE,db)
         await update.message.reply_text("✅ Question Added")
 
@@ -193,6 +209,7 @@ app.add_handler(CommandHandler("admin", admin))
 
 app.add_handler(CallbackQueryHandler(user_subject, pattern="user_subject"))
 app.add_handler(CallbackQueryHandler(user_chapter, pattern="sub_"))
+app.add_handler(CallbackQueryHandler(select_count, pattern="count_"))
 app.add_handler(CallbackQueryHandler(start_quiz, pattern="quiz_"))
 
 app.add_handler(CallbackQueryHandler(admin_buttons))
