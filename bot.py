@@ -1,7 +1,6 @@
-import json
-import random
+import json, random, logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes, PollAnswerHandler
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters, PollAnswerHandler
 
 TOKEN = "8581217078:AAHxvT124vdAT8NHViiQx_GyJzJzc-GxC38"
 ADMIN_ID = 5148765826
@@ -12,7 +11,9 @@ USER_FILE = "users.json"
 user_sessions = {}
 admin_sessions = {}
 
-# ---------- DATABASE ----------
+logging.basicConfig(level=logging.INFO)
+
+# ---------- JSON ----------
 
 def load_json(file):
     try:
@@ -32,15 +33,21 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     users[str(update.effective_user.id)] = True
     save_json(USER_FILE,users)
 
-    keyboard = [[InlineKeyboardButton("▶ Start Quiz", callback_data="user_subject")]]
-    await update.message.reply_text("🙏 Welcome to Quiz Bot", reply_markup=InlineKeyboardMarkup(keyboard))
+    keyboard = [
+        [InlineKeyboardButton("▶ Start Quiz", callback_data="user_subject")]
+    ]
+    await update.message.reply_text("🙏 Welcome to Quiz Bot\n\n👇 Start કરવા માટે બટન દબાવો", reply_markup=InlineKeyboardMarkup(keyboard))
 
-# ---------- USER QUIZ ----------
+# ---------- USER FLOW ----------
 
 async def user_subject(update: Update, context):
     query = update.callback_query
     await query.answer()
     db = load_json(DB_FILE)
+
+    if not db:
+        await query.edit_message_text("❌ હજુ કોઈ Subject નથી")
+        return
 
     buttons = [[InlineKeyboardButton(s, callback_data=f"sub_{s}")] for s in db.keys()]
     await query.edit_message_text("📚 Subject પસંદ કરો", reply_markup=InlineKeyboardMarkup(buttons))
@@ -52,35 +59,31 @@ async def user_chapter(update, context):
     context.user_data["subject"] = subject
 
     db = load_json(DB_FILE)
-    buttons = [[InlineKeyboardButton(c, callback_data=f"count_{c}")] for c in db[subject].keys()]
+    chapters = db.get(subject,{})
+
+    buttons = [[InlineKeyboardButton(c, callback_data=f"qty_{c}_10")] for c in chapters]
+    buttons.append([InlineKeyboardButton("20 Questions", callback_data=f"qty_{list(chapters.keys())[0]}_20")])
+
     await query.edit_message_text("📖 Chapter પસંદ કરો", reply_markup=InlineKeyboardMarkup(buttons))
-
-async def select_count(update, context):
-    query = update.callback_query
-    await query.answer()
-    chapter = query.data.split("_",1)[1]
-    context.user_data["chapter"] = chapter
-
-    keyboard = [
-        [InlineKeyboardButton("📝 10 Questions", callback_data="quiz_10")],
-        [InlineKeyboardButton("📝 20 Questions", callback_data="quiz_20")]
-    ]
-    await query.edit_message_text("કેટલા પ્રશ્ન લેવાં છે?", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def start_quiz(update, context):
     query = update.callback_query
     await query.answer()
 
-    total_q = int(query.data.split("_")[1])
+    _, chap, qty = query.data.split("_")
+    qty = int(qty)
     subject = context.user_data["subject"]
-    chapter = context.user_data["chapter"]
 
     db = load_json(DB_FILE)
-    questions = db[subject][chapter]
+    questions = db[subject][chap]
+
+    if len(questions) < qty:
+        qty = len(questions)
+
     random.shuffle(questions)
 
     user_sessions[query.from_user.id] = {
-        "questions": questions[:total_q],
+        "questions": questions[:qty],
         "score": 0,
         "qno": 0
     }
@@ -92,10 +95,9 @@ async def send_poll(query, context):
     session = user_sessions[uid]
 
     if session["qno"] >= len(session["questions"]):
-        score = session["score"]
         keyboard = [[InlineKeyboardButton("🔁 Restart", callback_data="user_subject")]]
         await query.message.reply_text(
-            f"🎉 Quiz Finished!\n\nતમારું સ્કોર: {score}/{len(session['questions'])}",
+            f"🎉 Quiz Finished\n\nScore: {session['score']}/{len(session['questions'])}",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return
@@ -119,15 +121,14 @@ async def poll_handler(update: Update, context):
         return
 
     session = user_sessions[uid]
-    correct = session["questions"][session["qno"]]["answer"]
 
-    if ans.option_ids[0] == correct:
+    if ans.option_ids[0] == session["questions"][session["qno"]]["answer"]:
         session["score"] += 1
 
     session["qno"] += 1
 
-    fake_query = type("obj",(),{"from_user":ans.user,"message":update.effective_chat})
-    await send_poll(fake_query, context)
+    fake = type("obj",(),{"from_user":ans.user,"message":update.effective_chat})
+    await send_poll(fake, context)
 
 # ---------- ADMIN PANEL ----------
 
@@ -151,19 +152,18 @@ async def admin_buttons(update, context):
     if query.from_user.id != ADMIN_ID:
         return
 
-    data = query.data
-    admin_sessions[query.from_user.id] = data
+    admin_sessions[query.from_user.id] = query.data
 
-    if data == "add_subject":
-        await query.edit_message_text("✍ Subject નામ મોકલો")
+    if query.data == "add_subject":
+        await query.edit_message_text("✍ Subject નામ લખો")
 
-    elif data == "add_chapter":
-        await query.edit_message_text("✍ Format:\nSubject | Chapter")
+    elif query.data == "add_chapter":
+        await query.edit_message_text("✍ Format:\nSubject Chapter")
 
-    elif data == "add_question":
+    elif query.data == "add_question":
         await query.edit_message_text("✍ Format:\nSubject | Chapter | Question | A | B | C | D | 0-3")
 
-    elif data == "total_users":
+    elif query.data == "total_users":
         users = load_json(USER_FILE)
         await query.edit_message_text(f"👥 Total Users: {len(users)}")
 
@@ -175,30 +175,36 @@ async def admin_text(update: Update, context):
         return
 
     mode = admin_sessions[update.effective_user.id]
-    text = update.message.text
+    text = update.message.text.strip()
     db = load_json(DB_FILE)
 
-    parts = [p.strip() for p in text.split("|")]
+    try:
+        if mode == "add_subject":
+            db.setdefault(text,{})
+            save_json(DB_FILE,db)
+            await update.message.reply_text("✅ Subject Added")
 
-    if mode == "add_subject":
-        db[parts[0]] = {}
-        save_json(DB_FILE,db)
-        await update.message.reply_text("✅ Subject Added")
+        elif mode == "add_chapter":
+            sub, chap = text.split()
+            db.setdefault(sub,{})[chap] = []
+            save_json(DB_FILE,db)
+            await update.message.reply_text("✅ Chapter Added")
 
-    elif mode == "add_chapter":
-        db.setdefault(parts[0],{})[parts[1]] = []
-        save_json(DB_FILE,db)
-        await update.message.reply_text("✅ Chapter Added")
+        elif mode == "add_question":
+            parts = [p.strip() for p in text.split("|")]
+            sub, chap = parts[0], parts[1]
+            q = parts[2]
+            opts = parts[3:7]
+            ans = int(parts[7])
 
-    elif mode == "add_question":
-        q = {
-            "question": parts[2],
-            "options": parts[3:7],
-            "answer": int(parts[7])
-        }
-        db[parts[0]][parts[1]].append(q)
-        save_json(DB_FILE,db)
-        await update.message.reply_text("✅ Question Added")
+            db.setdefault(sub,{}).setdefault(chap,[]).append({
+                "question":q,"options":opts,"answer":ans
+            })
+            save_json(DB_FILE,db)
+            await update.message.reply_text("✅ Question Added")
+
+    except:
+        await update.message.reply_text("❌ Wrong Format\n\nફરી સાચા format માં મોકલો")
 
 # ---------- RUN ----------
 
@@ -209,12 +215,10 @@ app.add_handler(CommandHandler("admin", admin))
 
 app.add_handler(CallbackQueryHandler(user_subject, pattern="user_subject"))
 app.add_handler(CallbackQueryHandler(user_chapter, pattern="sub_"))
-app.add_handler(CallbackQueryHandler(select_count, pattern="count_"))
-app.add_handler(CallbackQueryHandler(start_quiz, pattern="quiz_"))
+app.add_handler(CallbackQueryHandler(start_quiz, pattern="qty_"))
 
 app.add_handler(CallbackQueryHandler(admin_buttons))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, admin_text))
-
 app.add_handler(PollAnswerHandler(poll_handler))
 
 app.run_polling()
