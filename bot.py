@@ -1,15 +1,32 @@
+from flask import Flask
+from threading import Thread
 import json
 import random
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, CallbackQueryHandler,
     MessageHandler, ContextTypes, filters, PollAnswerHandler
 )
 
+# ================== KEEP ALIVE ==================
+
+app_flask = Flask("")
+
+@app_flask.route("/")
+def home():
+    return "Bot is running!"
+
+def run_web():
+    app_flask.run(host="0.0.0.0", port=10000)
+
+def keep_alive():
+    t = Thread(target=run_web)
+    t.start()
+
 # ================== CONFIG ==================
 
 BOT_TOKEN = "8581217078:AAHxvT124vdAT8NHViiQx_GyJzJzc-GxC38"
-ADMIN_ID = 5148765826   
+ADMIN_ID = 5148765826
 
 DB_FILE = "quiz_data.json"
 USER_FILE = "users.json"
@@ -40,9 +57,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[InlineKeyboardButton("▶ Start Quiz", callback_data="user_subject")]]
     await update.message.reply_text("🙏 Welcome to Quiz Bot", reply_markup=InlineKeyboardMarkup(keyboard))
 
-# ================== USER QUIZ ==================
+# ================== USER FLOW ==================
 
-async def user_subject(update: Update, context):
+async def user_subject(update, context):
     query = update.callback_query
     await query.answer()
 
@@ -54,7 +71,7 @@ async def user_subject(update: Update, context):
     buttons = [[InlineKeyboardButton(s, callback_data=f"sub_{s}")] for s in db]
     await query.edit_message_text("📚 Subject પસંદ કરો", reply_markup=InlineKeyboardMarkup(buttons))
 
-async def user_chapter(update: Update, context):
+async def user_chapter(update, context):
     query = update.callback_query
     await query.answer()
 
@@ -70,14 +87,30 @@ async def start_quiz(update, context):
     await query.answer()
 
     chapter = query.data.split("_",1)[1]
+    context.user_data["chapter"] = chapter
+
+    keyboard = [
+        [InlineKeyboardButton("🟢 10 પ્રશ્ન", callback_data="count_10")],
+        [InlineKeyboardButton("🔵 20 પ્રશ્ન", callback_data="count_20")]
+    ]
+
+    await query.edit_message_text("કેટલા પ્રશ્ન આપવા?", reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def select_count(update, context):
+    query = update.callback_query
+    await query.answer()
+
+    total = int(query.data.split("_")[1])
+
     subject = context.user_data["subject"]
+    chapter = context.user_data["chapter"]
 
     db = load_json(DB_FILE)
     questions = db[subject][chapter]
     random.shuffle(questions)
 
     user_sessions[query.from_user.id] = {
-        "questions": questions[:10],
+        "questions": questions[:total],
         "score": 0,
         "qno": 0
     }
@@ -93,10 +126,11 @@ async def send_poll(query, context):
 
     if session["qno"] >= len(session["questions"]):
         score = session["score"]
-        keyboard = [[InlineKeyboardButton("🔁 Restart", callback_data="user_subject")]]
+        keyboard = [[InlineKeyboardButton("🔁 Restart Quiz", callback_data="user_subject")]]
+
         await context.bot.send_message(
             chat_id=query.message.chat_id,
-            text=f"🎉 Quiz Finished\n\nScore: {score}/{len(session['questions'])}",
+            text=f"🎉 Quiz Finished!\n\n✅ Score: {score}/{len(session['questions'])}",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return
@@ -208,9 +242,11 @@ async def admin_text(update: Update, context):
             await update.message.reply_text("✅ Question Added")
 
     except:
-        await update.message.reply_text("❌ Wrong Format! Please try again")
+        await update.message.reply_text("❌ Wrong Format!")
 
 # ================== RUN ==================
+
+keep_alive()
 
 app = ApplicationBuilder().token(BOT_TOKEN).build()
 
@@ -220,6 +256,7 @@ app.add_handler(CommandHandler("admin", admin))
 app.add_handler(CallbackQueryHandler(user_subject, pattern="user_subject"))
 app.add_handler(CallbackQueryHandler(user_chapter, pattern="sub_"))
 app.add_handler(CallbackQueryHandler(start_quiz, pattern="quiz_"))
+app.add_handler(CallbackQueryHandler(select_count, pattern="count_"))
 
 app.add_handler(CallbackQueryHandler(admin_buttons))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, admin_text))
