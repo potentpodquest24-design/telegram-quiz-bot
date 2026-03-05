@@ -1,9 +1,7 @@
 from flask import Flask
 from threading import Thread
 import json, random, asyncio
-from telegram import (
-    Update, InlineKeyboardButton, InlineKeyboardMarkup
-)
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder, CommandHandler,
     CallbackQueryHandler, ContextTypes,
@@ -54,6 +52,35 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[InlineKeyboardButton("▶ Start Quiz", callback_data="user_subject")]]
     await update.message.reply_text("🙏 Welcome to Quiz Bot", reply_markup=InlineKeyboardMarkup(keyboard))
 
+# ================= ADMIN PANEL =================
+
+async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("❌ You are not admin")
+        return
+
+    keyboard = [
+        [InlineKeyboardButton("👥 Total Users", callback_data="admin_users")],
+        [InlineKeyboardButton("🏆 Reset Leaderboard", callback_data="admin_reset_lb")]
+    ]
+
+    await update.message.reply_text("🔐 Admin Panel", reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def admin_actions(update, context):
+    query = update.callback_query
+    await query.answer()
+
+    if query.from_user.id != ADMIN_ID:
+        return
+
+    if query.data == "admin_users":
+        results = load_json(RESULT_FILE)
+        await query.edit_message_text(f"👥 Total Users: {len(results)}")
+
+    elif query.data == "admin_reset_lb":
+        save_json(LEADERBOARD_FILE, {})
+        await query.edit_message_text("🏆 Leaderboard Reset Successfully")
+
 # ================= SUBJECT =================
 
 async def user_subject(update, context):
@@ -74,37 +101,22 @@ async def user_chapter(update, context):
     subject = query.data.replace("sub_", "")
     context.user_data["subject"] = subject
 
-    if subject == "Maths":
-        keyboard = [
-            [InlineKeyboardButton("🟢 With Time (1 Min)", callback_data="mode_time")],
-            [InlineKeyboardButton("🔵 Without Time", callback_data="mode_notime")]
-        ]
-        await query.edit_message_text("Mode પસંદ કરો", reply_markup=InlineKeyboardMarkup(keyboard))
-        return
-
     db = load_json(DB_FILE)
-    chapter = list(db[subject].keys())[0]
-    context.user_data["chapter"] = chapter
+    chapters = db[subject].keys()
 
-    await show_count_buttons(query)
+    buttons = [[InlineKeyboardButton(c, callback_data=f"chap_{c}")] for c in chapters]
 
-# ================= MODE =================
+    await query.edit_message_text("📖 Chapter પસંદ કરો", reply_markup=InlineKeyboardMarkup(buttons))
 
-async def select_mode(update, context):
+# ================= SELECT CHAPTER =================
+
+async def select_chapter(update, context):
     query = update.callback_query
     await query.answer()
 
-    context.user_data["mode"] = query.data
-
-    db = load_json(DB_FILE)
-    chapter = list(db["Maths"].keys())[0]
+    chapter = query.data.replace("chap_", "")
     context.user_data["chapter"] = chapter
 
-    await show_count_buttons(query)
-
-# ================= QUESTION COUNT =================
-
-async def show_count_buttons(query):
     keyboard = [
         [InlineKeyboardButton("10", callback_data="count_10"),
          InlineKeyboardButton("20", callback_data="count_20")],
@@ -127,10 +139,14 @@ async def select_count(update, context):
 
     db = load_json(DB_FILE)
     questions = db[subject][chapter]
-    random.shuffle(questions)
+
+    if total > len(questions):
+        total = len(questions)
+
+    selected_questions = random.sample(questions, total)
 
     user_sessions[query.from_user.id] = {
-        "questions": questions[:total],
+        "questions": selected_questions,
         "qno": 0,
         "score": 0,
         "subject": subject
@@ -157,8 +173,7 @@ async def send_poll_question(context, chat_id, user_id):
         options=q["options"],
         type="quiz",
         correct_option_id=q["answer"],
-        is_anonymous=False,
-        open_period=60 if context.user_data.get("mode") == "mode_time" else None
+        is_anonymous=False
     )
 
 # ================= POLL ANSWER =================
@@ -180,7 +195,6 @@ async def handle_poll_answer(update: Update, context):
     s["qno"] += 1
 
     await asyncio.sleep(1)
-
     await send_poll_question(context, user_id, user_id)
 
 # ================= FINISH =================
@@ -190,12 +204,10 @@ async def finish_quiz(context, chat_id, user_id):
     score = s["score"]
     total = len(s["questions"])
 
-    # Save Leaderboard
     leaderboard = load_json(LEADERBOARD_FILE)
     leaderboard[str(user_id)] = leaderboard.get(str(user_id), 0) + score
     save_json(LEADERBOARD_FILE, leaderboard)
 
-    # Save Result History
     results = load_json(RESULT_FILE)
     results.setdefault(str(user_id), []).append({
         "subject": s["subject"],
@@ -204,10 +216,7 @@ async def finish_quiz(context, chat_id, user_id):
     })
     save_json(RESULT_FILE, results)
 
-    await context.bot.send_message(
-        chat_id=chat_id,
-        text=f"🎉 Quiz Finished!\n\nScore: {score}/{total}"
-    )
+    await context.bot.send_message(chat_id=chat_id, text=f"🎉 Quiz Finished!\nScore: {score}/{total}")
 
 # ================= LEADERBOARD =================
 
@@ -248,15 +257,17 @@ keep_alive()
 app = ApplicationBuilder().token(BOT_TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
+app.add_handler(CommandHandler("admin", admin))
 app.add_handler(CommandHandler("leaderboard", leaderboard))
 app.add_handler(CommandHandler("performance", performance))
 
+app.add_handler(CallbackQueryHandler(admin_actions, pattern="admin_"))
 app.add_handler(CallbackQueryHandler(user_subject, pattern="user_subject"))
 app.add_handler(CallbackQueryHandler(user_chapter, pattern="sub_"))
-app.add_handler(CallbackQueryHandler(select_mode, pattern="mode_"))
+app.add_handler(CallbackQueryHandler(select_chapter, pattern="chap_"))
 app.add_handler(CallbackQueryHandler(select_count, pattern="count_"))
 
 app.add_handler(PollAnswerHandler(handle_poll_answer))
 
 if __name__ == "__main__":
-    app.run_polling()
+    app.run_polling(drop_pending_updates=True)
