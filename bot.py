@@ -1,12 +1,8 @@
-import os
-import json
-import random
-import asyncio
-import time
-import aiofiles
 from flask import Flask
 from threading import Thread
+import json, asyncio, os, time
 from dotenv import load_dotenv
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder, CommandHandler,
@@ -16,165 +12,213 @@ from telegram.ext import (
 
 # ================= LOAD ENV =================
 load_dotenv()
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = 5148765826
-
-DB_FILE = "quiz_data.json"
-LEADERBOARD_FILE = "leaderboard.json"
-USERS_FILE = "users.json"
-
-user_sessions = {}
 
 # ================= KEEP ALIVE =================
 app_flask = Flask("")
 
 @app_flask.route("/")
 def home():
-    return "Bot Running"
+    return "Bot is running 24/7 with Admin Panel & Timer Fix!"
 
 def run_web():
-    port = int(os.environ.get("PORT", 10000))
-    app_flask.run(host="0.0.0.0", port=port)
+    app_flask.run(host="0.0.0.0", port=10000)
 
 def keep_alive():
-    Thread(target=run_web, daemon=True).start()
+    Thread(target=run_web).start()
+
+# ================= CONFIG =================
+BOT_TOKEN = os.getenv("BOT_TOKEN") 
+ADMIN_ID = int(os.getenv("ADMIN_ID", 5148765826))
+
+DB_FILE = "quiz_data.json"
+USERS_FILE = "users.json"
+user_sessions = {}
 
 # ================= FILE UTILS =================
-async def load_json(file):
+def load_json(file, default_type=dict):
     try:
-        async with aiofiles.open(file, "r", encoding="utf-8") as f:
-            return json.loads(await f.read())
+        with open(file, "r", encoding="utf-8") as f:
+            return json.load(f)
     except:
-        return {}
+        return default_type()
 
-async def save_json(file, data):
-    async with aiofiles.open(file, "w", encoding="utf-8") as f:
-        await f.write(json.dumps(data, ensure_ascii=False, indent=2))
+def save_json(file, data):
+    with open(file, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+def register_user(user_id):
+    users = load_json(USERS_FILE, list)
+    if user_id not in users:
+        users.append(user_id)
+        save_json(USERS_FILE, users)
+
+# ================= ADMIN COMMANDS =================
+async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.chat_id
+    if user_id != ADMIN_ID:
+        await update.message.reply_text("⛔ આ કમાન્ડ માત્ર એડમિન માટે છે.")
+        return
+        
+    users = load_json(USERS_FILE, list)
+    msg = (
+        "👨‍💻 **એડમિન પેનલ (Admin Panel)**\n\n"
+        f"👥 કુલ યુઝર્સ: **{len(users)}**\n\n"
+        "📢 **બ્રોડકાસ્ટ કરવા માટેની રીત:**\n"
+        "`/broadcast તમારો મેસેજ અહીં લખો`"
+    )
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
+async def broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.chat_id
+    if user_id != ADMIN_ID:
+        return
+        
+    if not context.args:
+        await update.message.reply_text("⚠️ ઉદાહરણ: `/broadcast હેલો વિદ્યાર્થીઓ!`", parse_mode="Markdown")
+        return
+        
+    text = " ".join(context.args)
+    users = load_json(USERS_FILE, list)
+    
+    await update.message.reply_text("⏳ બ્રોડકાસ્ટ શરૂ થઈ ગયું છે...")
+    success = 0
+    for uid in users:
+        try:
+            await context.bot.send_message(chat_id=uid, text=f"📢 **અગત્યની સૂચના**\n\n{text}")
+            success += 1
+            await asyncio.sleep(0.05) 
+        except:
+            pass
+            
+    await update.message.reply_text(f"✅ બ્રોડકાસ્ટ પૂર્ણ! મેસેજ {success}/{len(users)} યુઝર્સને મોકલી દેવાયો છે.")
 
 # ================= START =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.effective_user.id)
+    user_id = update.message.chat_id
+    register_user(user_id)
 
-    users = await load_json(USERS_FILE)
-    if user_id not in users:
-        users[user_id] = {"name": update.effective_user.first_name}
-        await save_json(USERS_FILE, users)
+    keyboard = [[InlineKeyboardButton("▶ Start Quiz", callback_data="user_subject")]]
+    await update.message.reply_text("🙏 Welcome to Quiz Bot\n\nતમારી મનપસંદ પરીક્ષાની તૈયારી માટે ક્વિઝ શરૂ કરો.", reply_markup=InlineKeyboardMarkup(keyboard))
 
-    keyboard = [[InlineKeyboardButton("▶ Start Quiz", callback_data="start_quiz")]]
-
-    await update.message.reply_text(
-        "🙏 Welcome to Quiz Bot",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
-# ================= LEADERBOARD =================
-async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    lb = await load_json(LEADERBOARD_FILE)
-    users = await load_json(USERS_FILE)
-
-    sorted_lb = sorted(lb.items(), key=lambda x: x[1], reverse=True)[:10]
-
-    text = "🏆 Top 10 Leaderboard\n\n"
-    for i, (uid, score) in enumerate(sorted_lb, 1):
-        name = users.get(uid, {}).get("name", "User")
-        text += f"{i}. {name} - {score}\n"
-
-    await update.message.reply_text(text)
-
-# ================= QUIZ FLOW =================
-async def start_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ================= SUBJECT =================
+async def user_subject(update, context):
     query = update.callback_query
     await query.answer()
 
-    db = await load_json(DB_FILE)
-    subjects = list(db.keys())
+    db = load_json(DB_FILE, dict)
+    if not db:
+        await query.edit_message_text("⚠️ એરર: ડેટાબેઝ ખાલી છે અથવા quiz_data.json માં ભૂલ છે.")
+        return
 
-    buttons = [[InlineKeyboardButton(s, callback_data=f"sub_{i}")]
-               for i, s in enumerate(subjects)]
+    buttons = [[InlineKeyboardButton(s, callback_data=f"sub_{s}")] for s in db]
+    await query.edit_message_text("📚 વિષય (Subject) પસંદ કરો", reply_markup=InlineKeyboardMarkup(buttons))
 
-    await query.edit_message_text("📚 Subject પસંદ કરો",
-        reply_markup=InlineKeyboardMarkup(buttons)
-    )
-
-async def select_subject(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ================= CHAPTER =================
+async def user_chapter(update, context):
     query = update.callback_query
     await query.answer()
 
-    sub_index = int(query.data.split("_")[1])
-    db = await load_json(DB_FILE)
-    subjects = list(db.keys())
-    subject = subjects[sub_index]
-
+    subject = query.data.replace("sub_", "")
     context.user_data["subject"] = subject
 
-    chapters = list(db[subject].keys())
+    db = load_json(DB_FILE, dict)
+    chapters = db.get(subject, {})
 
-    buttons = [[InlineKeyboardButton(c, callback_data=f"chap_{i}")]
-               for i, c in enumerate(chapters)]
+    # 64-byte લિમિટ એરર સોલ્વ કરવા ઇન્ડેક્સનો ઉપયોગ
+    buttons = [[InlineKeyboardButton(c, callback_data=f"chap_{i}")] for i, c in enumerate(chapters)]
+    buttons.append([InlineKeyboardButton("🔙 પાછા જાઓ", callback_data="user_subject")])
+    
+    await query.edit_message_text("📖 પ્રકરણ (Chapter) પસંદ કરો", reply_markup=InlineKeyboardMarkup(buttons))
 
-    await query.edit_message_text("📖 Chapter પસંદ કરો",
-        reply_markup=InlineKeyboardMarkup(buttons)
-    )
-
-async def select_chapter(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ================= SELECT CHAPTER =================
+async def select_chapter(update, context):
     query = update.callback_query
     await query.answer()
 
-    chap_index = int(query.data.split("_")[1])
-    subject = context.user_data["subject"]
+    chapter_index = int(query.data.replace("chap_", ""))
+    subject = context.user_data.get("subject")
+    
+    db = load_json(DB_FILE, dict)
+    chapters_list = list(db.get(subject, {}).keys())
+    
+    if chapter_index < len(chapters_list):
+        chapter_name = chapters_list[chapter_index]
+        context.user_data["chapter"] = chapter_name
+    else:
+        await query.edit_message_text("⚠️ કોઈ એરર આવી છે, ફરીથી /start કરો.")
+        return
 
-    db = await load_json(DB_FILE)
-    chapter = list(db[subject].keys())[chap_index]
+    if subject == "Maths":
+        keyboard = [
+            [InlineKeyboardButton("⏱ 60 sec", callback_data="mode_60")],
+            [InlineKeyboardButton("⏱ 80 sec", callback_data="mode_80")],
+            [InlineKeyboardButton("▶ Without Time", callback_data="mode_notime")]
+        ]
+        await query.edit_message_text("⏳ ટાઈમર મોડ પસંદ કરો", reply_markup=InlineKeyboardMarkup(keyboard))
+        return
 
-    context.user_data["chapter"] = chapter
+    context.user_data["mode"] = "mode_notime"
+    await show_count_buttons(query)
 
-    keyboard = [
-        [InlineKeyboardButton("⏱ 60 sec", callback_data="mode_60")],
-        [InlineKeyboardButton("⏱ 80 sec", callback_data="mode_80")],
-        [InlineKeyboardButton("▶ Without Time", callback_data="mode_notime")]
-    ]
-
-    await query.edit_message_text("Mode પસંદ કરો",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
-async def select_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ================= MODE =================
+async def select_mode(update, context):
     query = update.callback_query
     await query.answer()
 
     context.user_data["mode"] = query.data
+    await show_count_buttons(query)
 
-    await query.edit_message_text("🚀 Quiz Started!")
+# ================= COUNT =================
+async def show_count_buttons(query):
+    keyboard = [
+        [InlineKeyboardButton("10", callback_data="count_10"),
+         InlineKeyboardButton("20", callback_data="count_20")],
+        [InlineKeyboardButton("30", callback_data="count_30"),
+         InlineKeyboardButton("40", callback_data="count_40")],
+        [InlineKeyboardButton("50", callback_data="count_50")]
+    ]
+    await query.edit_message_text("🎯 તમારે કેટલા પ્રશ્નો રમવા છે?", reply_markup=InlineKeyboardMarkup(keyboard))
 
-    await start_quiz_session(query.from_user.id, context)
+# ================= START QUIZ =================
+async def select_count(update, context):
+    query = update.callback_query
+    await query.answer()
 
-# ================= QUIZ SESSION =================
-async def start_quiz_session(user_id, context):
-    db = await load_json(DB_FILE)
+    total = int(query.data.split("_")[1])
+    subject = context.user_data.get("subject")
+    chapter = context.user_data.get("chapter")
 
-    subject = context.user_data["subject"]
-    chapter = context.user_data["chapter"]
+    db = load_json(DB_FILE, dict)
+    if subject not in db or chapter not in db[subject]:
+        await query.edit_message_text("⚠️ આ ચેપ્ટરમાં કોઈ પ્રશ્નો મળ્યા નથી.")
+        return
 
     questions = db[subject][chapter]
-    selected = random.sample(questions, min(10, len(questions)))
 
-    user_sessions[user_id] = {
+    # પ્રશ્નો લાઈનસર જ આવે તે માટેનો કોડ
+    if total >= len(questions):
+        selected = questions.copy()
+    else:
+        selected = questions[:total]
+
+    user_sessions[query.from_user.id] = {
+        "quiz_id": time.time(),
         "questions": selected,
         "qno": 0,
         "score": 0,
-        "chat_id": user_id,
-        "mode": context.user_data["mode"],
-        "start_time": time.time(),
-        "current_poll": None
+        "subject": subject,
+        "mode": context.user_data.get("mode"),
+        "chat_id": query.message.chat_id,
+        "current_poll_id": None
     }
 
-    await send_question(context, user_id)
+    await query.edit_message_text("🚀 તમારી ક્વિઝ શરૂ થઈ રહી છે...\nશુભકામનાઓ!")
+    await send_poll_question(context, query.from_user.id)
 
-# ================= SEND QUESTION =================
-async def send_question(context, user_id):
+# ================= SEND POLL =================
+async def send_poll_question(context, user_id):
     s = user_sessions.get(user_id)
-    if not s:
-        return
+    if not s: return
 
     if s["qno"] >= len(s["questions"]):
         await finish_quiz(context, user_id)
@@ -182,95 +226,95 @@ async def send_question(context, user_id):
 
     q = s["questions"][s["qno"]]
 
-    open_period = None
-    if s["mode"] == "mode_60":
-        open_period = 60
-    elif s["mode"] == "mode_80":
-        open_period = 80
+    if s["mode"] == "mode_60": open_period = 60
+    elif s["mode"] == "mode_80": open_period = 80
+    else: open_period = None
 
-    poll = await context.bot.send_poll(
-        chat_id=s["chat_id"],
-        question=f"Q{s['qno']+1}. {q['question']}",
-        options=q["options"],
-        type="quiz",
-        correct_option_id=q["answer"],
-        is_anonymous=False,
-        open_period=open_period
-    )
+    try:
+        poll_msg = await context.bot.send_poll(
+            chat_id=s["chat_id"],
+            question=f"પ્રશ્ન {s['qno']+1}. {q['question']}",
+            options=q["options"],
+            type="quiz",
+            correct_option_id=q["answer"],
+            is_anonymous=False,
+            open_period=open_period
+        )
 
-    s["current_poll"] = poll.poll.id
+        s["current_poll_id"] = poll_msg.poll.id
 
-    if open_period:
-        asyncio.create_task(auto_next(context, user_id, open_period))
+        if open_period:
+            asyncio.create_task(auto_next(context, user_id, open_period, s["qno"], s["quiz_id"]))
+            
+    except Exception as e:
+        print(f"Error sending poll: {e}")
+        await finish_quiz(context, user_id)
 
-# ================= AUTO NEXT =================
-async def auto_next(context, user_id, delay):
+async def auto_next(context, user_id, delay, expected_qno, quiz_id):
     await asyncio.sleep(delay + 1)
-
     s = user_sessions.get(user_id)
-    if not s:
+    
+    if not s or s.get("quiz_id") != quiz_id: 
         return
-
-    s["qno"] += 1
-    await send_question(context, user_id)
+        
+    if s["qno"] == expected_qno:
+        s["qno"] += 1
+        await send_poll_question(context, user_id)
 
 # ================= POLL ANSWER =================
-async def handle_poll(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_poll_answer(update: Update, context):
     answer = update.poll_answer
     user_id = answer.user.id
-
     s = user_sessions.get(user_id)
-    if not s:
+    if not s: return
+
+    if answer.poll_id != s.get("current_poll_id"):
         return
 
-    if answer.option_ids:
-        selected = answer.option_ids[0]
+    selected = answer.option_ids[0]
+    if s["qno"] < len(s["questions"]):
         correct = s["questions"][s["qno"]]["answer"]
         if selected == correct:
             s["score"] += 1
 
     s["qno"] += 1
-    await send_question(context, user_id)
+    await asyncio.sleep(1) 
+    await send_poll_question(context, user_id)
 
 # ================= FINISH =================
 async def finish_quiz(context, user_id):
     s = user_sessions.get(user_id)
-    if not s:
-        return
-
+    if not s: return
+    
     score = s["score"]
+    total = len(s["questions"])
 
-    lb = await load_json(LEADERBOARD_FILE)
-    lb[str(user_id)] = lb.get(str(user_id), 0) + score
-    await save_json(LEADERBOARD_FILE, lb)
-
-    keyboard = [
-        [InlineKeyboardButton("🔁 Retry", callback_data="retry")],
-        [InlineKeyboardButton("🏠 Main Menu", callback_data="menu")]
-    ]
+    keyboard = [[InlineKeyboardButton("🔁 ફરીથી રમો (Restart)", callback_data="user_subject")]]
 
     await context.bot.send_message(
         chat_id=s["chat_id"],
-        text=f"🎉 Quiz Finished!\nScore: {score}",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        text=f"🎉 **ક્વિઝ પૂર્ણ થઈ ગઈ છે!**\n\n🎯 તમારો સ્કોર: **{score} / {total}**\n\nખૂબ ખૂબ અભિનંદન!",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown"
     )
-
     del user_sessions[user_id]
 
 # ================= RUN =================
+keep_alive()
+
+app = ApplicationBuilder().token(BOT_TOKEN).build()
+
+app.add_handler(CommandHandler("start", start))
+app.add_handler(CommandHandler("admin", admin_panel))
+app.add_handler(CommandHandler("broadcast", broadcast_message))
+
+app.add_handler(CallbackQueryHandler(user_subject, pattern="^user_subject$"))
+app.add_handler(CallbackQueryHandler(user_chapter, pattern="^sub_"))
+app.add_handler(CallbackQueryHandler(select_chapter, pattern="^chap_"))
+app.add_handler(CallbackQueryHandler(select_mode, pattern="^mode_"))
+app.add_handler(CallbackQueryHandler(select_count, pattern="^count_"))
+app.add_handler(PollAnswerHandler(handle_poll_answer))
+
 if __name__ == "__main__":
-    keep_alive()
-
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("leaderboard", leaderboard))
-
-    app.add_handler(CallbackQueryHandler(start_quiz, pattern="start_quiz"))
-    app.add_handler(CallbackQueryHandler(select_subject, pattern="^sub_"))
-    app.add_handler(CallbackQueryHandler(select_chapter, pattern="^chap_"))
-    app.add_handler(CallbackQueryHandler(select_mode, pattern="^mode_"))
-    app.add_handler(PollAnswerHandler(handle_poll))
-
-    print("Bot Running...")
+    print("Bot is starting securely with all features...")
     app.run_polling(drop_pending_updates=True)
