@@ -1,12 +1,19 @@
+import os
+import json
+import random
+import asyncio
 from flask import Flask
 from threading import Thread
-import json, random, asyncio
+from dotenv import load_dotenv  # .env ફાઇલ લોડ કરવા માટે
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder, CommandHandler,
     CallbackQueryHandler, ContextTypes,
     PollAnswerHandler
 )
+
+# ================= LOAD ENV =================
+load_dotenv()  # આ લાઈન તમારી .env ફાઇલમાંથી ડેટા વાંચશે
 
 # ================= KEEP ALIVE =================
 
@@ -24,7 +31,8 @@ def keep_alive():
 
 # ================= CONFIG =================
 
-BOT_TOKEN = "8581217078:AAFI8S1IJp_Xc1ll-eMycg6NX0IoSc53lkY"  
+# હવે ટોકન સીધો .env માંથી આવશે, અહીં લખવાની જરૂર નથી
+BOT_TOKEN = os.getenv("BOT_TOKEN") 
 ADMIN_ID = 5148765826
 
 DB_FILE = "quiz_data.json"
@@ -61,7 +69,6 @@ async def user_subject(update, context):
     db = load_json(DB_FILE)
     buttons = [[InlineKeyboardButton(s, callback_data=f"sub_{s}")] for s in db]
 
-    # જો નવો મેસેજ હોય અથવા જૂનો એડિટ કરવાનો હોય
     if query.message:
         await query.edit_message_text("📚 Subject પસંદ કરો", reply_markup=InlineKeyboardMarkup(buttons))
 
@@ -90,7 +97,6 @@ async def select_chapter(update, context):
     chapter = query.data.replace("chap_", "")
     context.user_data["chapter"] = chapter
 
-    # .get() નો ઉપયોગ જેથી બોટ રિસ્ટાર્ટ વખતે એરર ન આવે
     if context.user_data.get("subject") == "Maths":
         keyboard = [
             [InlineKeyboardButton("⏱ 60 sec", callback_data="mode_60")],
@@ -136,7 +142,6 @@ async def select_count(update, context):
 
     db = load_json(DB_FILE)
     
-    # સુરક્ષા માટે ચેક કરો કે ડેટા છે કે નહીં
     if subject not in db or chapter not in db[subject]:
         await query.edit_message_text("⚠️ આ ચેપ્ટરમાં કોઈ પ્રશ્નો મળ્યા નથી.")
         return
@@ -168,7 +173,6 @@ async def send_poll_question(context, user_id):
     if not s:
         return
 
-    # જો બધા પ્રશ્નો પૂરા થઈ ગયા હોય
     if s["qno"] >= len(s["questions"]):
         await finish_quiz(context, user_id)
         return
@@ -193,7 +197,6 @@ async def send_poll_question(context, user_id):
             open_period=open_period
         )
 
-        # AUTO NEXT IF NO ANSWER (Race Condition ફિક્સ કરેલ છે)
         if open_period:
             asyncio.create_task(auto_next(context, user_id, open_period, s["qno"]))
             
@@ -203,12 +206,8 @@ async def send_poll_question(context, user_id):
 
 async def auto_next(context, user_id, delay, expected_qno):
     await asyncio.sleep(delay + 1)
-
     s = user_sessions.get(user_id)
-    if not s:
-        return
-
-    # જો યુઝર હજુ એ જ પ્રશ્ન પર હોય (એટલે કે જવાબ નથી આપ્યો), તો જ આગળ વધો
+    if not s: return
     if s["qno"] == expected_qno:
         s["qno"] += 1
         await send_poll_question(context, user_id)
@@ -218,24 +217,17 @@ async def auto_next(context, user_id, delay, expected_qno):
 async def handle_poll_answer(update: Update, context):
     answer = update.poll_answer
     user_id = answer.user.id
-
     s = user_sessions.get(user_id)
-    if not s:
-        return
+    if not s: return
 
     selected = answer.option_ids[0]
-    
-    # સુરક્ષા માટે ચેક કરો
     if s["qno"] < len(s["questions"]):
         correct = s["questions"][s["qno"]]["answer"]
-
         if selected == correct:
             s["score"] += 1
 
-    # જવાબ આપ્યા પછી તરત જ પ્રશ્ન નંબર વધારી દો
     s["qno"] += 1
-
-    await asyncio.sleep(1) # થોડું ડીલે જેથી યુઝર સાચો જવાબ જોઈ શકે
+    await asyncio.sleep(1) 
     await send_poll_question(context, user_id)
 
 # ================= FINISH =================
@@ -246,7 +238,6 @@ async def finish_quiz(context, user_id):
     
     score = s["score"]
     total = len(s["questions"])
-
     keyboard = [[InlineKeyboardButton("🔁 Restart Quiz", callback_data="user_subject")]]
 
     await context.bot.send_message(
@@ -254,8 +245,6 @@ async def finish_quiz(context, user_id):
         text=f"🎉 Quiz Finished!\n\nતમારો સ્કોર: {score}/{total}",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
-
-    # સેશન પૂરો થાય એટલે ડેટા ક્લિયર કરો
     del user_sessions[user_id]
 
 # ================= RUN =================
@@ -275,4 +264,3 @@ app.add_handler(PollAnswerHandler(handle_poll_answer))
 if __name__ == "__main__":
     print("Bot is starting...")
     app.run_polling(drop_pending_updates=True)
-
