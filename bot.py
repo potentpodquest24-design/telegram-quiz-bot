@@ -24,7 +24,7 @@ def keep_alive():
 
 # ================= CONFIG =================
 
-BOT_TOKEN = "8581217078:AAHxvT124vdAT8NHViiQx_GyJzJzc-GxC38"  
+BOT_TOKEN = "8581217078:AAFI8S1IJp_Xc1ll-eMycg6NX0IoSc53lkY"  
 ADMIN_ID = 5148765826
 
 DB_FILE = "quiz_data.json"
@@ -275,3 +275,4 @@ app.add_handler(PollAnswerHandler(handle_poll_answer))
 if __name__ == "__main__":
     print("Bot is starting...")
     app.run_polling(drop_pending_updates=True)
+
