@@ -75,10 +75,6 @@ async def user_chapter(update, context):
     db = load_json(DB_FILE)
     chapters = db.get(subject, {})
 
-    if not chapters:
-        await query.edit_message_text("❌ No chapters found.")
-        return
-
     buttons = [[InlineKeyboardButton(c, callback_data=f"chap_{c}")]
                for c in chapters]
 
@@ -95,12 +91,14 @@ async def select_chapter(update, context):
 
     if context.user_data["subject"] == "Maths":
         keyboard = [
-            [InlineKeyboardButton("🟢 With Time (60 sec)", callback_data="mode_time")],
-            [InlineKeyboardButton("🔵 Without Time", callback_data="mode_notime")]
+            [InlineKeyboardButton("⏱ 60 sec", callback_data="mode_60")],
+            [InlineKeyboardButton("⏱ 80 sec", callback_data="mode_80")],
+            [InlineKeyboardButton("▶ Without Time", callback_data="mode_notime")]
         ]
         await query.edit_message_text("Mode પસંદ કરો", reply_markup=InlineKeyboardMarkup(keyboard))
         return
 
+    context.user_data["mode"] = "mode_notime"
     await show_count_buttons(query)
 
 # ================= MODE =================
@@ -148,33 +146,56 @@ async def select_count(update, context):
         "qno": 0,
         "score": 0,
         "subject": subject,
-        "mode": context.user_data.get("mode", "mode_notime")
+        "mode": context.user_data.get("mode"),
+        "chat_id": query.message.chat_id
     }
 
-    await send_poll_question(context, query.message.chat_id, query.from_user.id)
+    await send_poll_question(context, query.from_user.id)
 
 # ================= SEND POLL =================
 
-async def send_poll_question(context, chat_id, user_id):
+async def send_poll_question(context, user_id):
     s = user_sessions.get(user_id)
     if not s:
         return
 
     if s["qno"] >= len(s["questions"]):
-        await finish_quiz(context, chat_id, user_id)
+        await finish_quiz(context, user_id)
         return
 
     q = s["questions"][s["qno"]]
 
-    await context.bot.send_poll(
-        chat_id=chat_id,
+    if s["mode"] == "mode_60":
+        open_period = 60
+    elif s["mode"] == "mode_80":
+        open_period = 80
+    else:
+        open_period = None
+
+    poll = await context.bot.send_poll(
+        chat_id=s["chat_id"],
         question=f"Q{s['qno']+1}. {q['question']}",
         options=q["options"],
         type="quiz",
         correct_option_id=q["answer"],
         is_anonymous=False,
-        open_period=60 if s["mode"] == "mode_time" else None
+        open_period=open_period
     )
+
+    # AUTO NEXT IF NO ANSWER
+    if open_period:
+        asyncio.create_task(auto_next(context, user_id, open_period))
+
+async def auto_next(context, user_id, delay):
+    await asyncio.sleep(delay + 1)
+
+    s = user_sessions.get(user_id)
+    if not s:
+        return
+
+    # If user still on same question → move next
+    s["qno"] += 1
+    await send_poll_question(context, user_id)
 
 # ================= POLL ANSWER =================
 
@@ -195,65 +216,24 @@ async def handle_poll_answer(update: Update, context):
     s["qno"] += 1
 
     await asyncio.sleep(1)
-
-    await send_poll_question(context, user_id, user_id)
+    await send_poll_question(context, user_id)
 
 # ================= FINISH =================
 
-async def finish_quiz(context, chat_id, user_id):
+async def finish_quiz(context, user_id):
     s = user_sessions[user_id]
     score = s["score"]
     total = len(s["questions"])
 
-    leaderboard = load_json(LEADERBOARD_FILE)
-    leaderboard[str(user_id)] = leaderboard.get(str(user_id), 0) + score
-    save_json(LEADERBOARD_FILE, leaderboard)
-
-    results = load_json(RESULT_FILE)
-    results.setdefault(str(user_id), []).append({
-        "subject": s["subject"],
-        "score": score,
-        "total": total
-    })
-    save_json(RESULT_FILE, results)
-
     keyboard = [[InlineKeyboardButton("🔁 Restart Quiz", callback_data="user_subject")]]
 
     await context.bot.send_message(
-        chat_id=chat_id,
+        chat_id=s["chat_id"],
         text=f"🎉 Quiz Finished!\n\nScore: {score}/{total}",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-# ================= COMMANDS =================
-
-async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    data = load_json(LEADERBOARD_FILE)
-    if not data:
-        await update.message.reply_text("No leaderboard data yet.")
-        return
-
-    sorted_users = sorted(data.items(), key=lambda x: x[1], reverse=True)[:10]
-
-    text = "🏆 Top 10 Leaderboard\n\n"
-    for i, (uid, score) in enumerate(sorted_users, 1):
-        text += f"{i}. {uid} — {score} points\n"
-
-    await update.message.reply_text(text)
-
-async def performance(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.effective_user.id)
-    results = load_json(RESULT_FILE)
-
-    if user_id not in results:
-        await update.message.reply_text("No performance data.")
-        return
-
-    text = "📊 Your Performance:\n\n"
-    for r in results[user_id]:
-        text += f"{r['subject']} → {r['score']}/{r['total']}\n"
-
-    await update.message.reply_text(text)
+    del user_sessions[user_id]
 
 # ================= RUN =================
 
@@ -262,15 +242,11 @@ keep_alive()
 app = ApplicationBuilder().token(BOT_TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("leaderboard", leaderboard))
-app.add_handler(CommandHandler("performance", performance))
-
 app.add_handler(CallbackQueryHandler(user_subject, pattern="user_subject"))
 app.add_handler(CallbackQueryHandler(user_chapter, pattern="sub_"))
 app.add_handler(CallbackQueryHandler(select_chapter, pattern="chap_"))
 app.add_handler(CallbackQueryHandler(select_mode, pattern="mode_"))
 app.add_handler(CallbackQueryHandler(select_count, pattern="count_"))
-
 app.add_handler(PollAnswerHandler(handle_poll_answer))
 
 if __name__ == "__main__":
