@@ -2,6 +2,7 @@ import os
 import json
 import random
 import asyncio
+import time  # નવું: Timer બગ સોલ્વ કરવા માટે
 from flask import Flask
 from threading import Thread
 from dotenv import load_dotenv  # .env ફાઇલ લોડ કરવા માટે
@@ -155,12 +156,14 @@ async def select_count(update, context):
         selected = random.sample(questions, total)
 
     user_sessions[query.from_user.id] = {
+        "quiz_id": time.time(),  # સુધારો: નવી ક્વિઝ માટે યુનિક આઈડી
         "questions": selected,
         "qno": 0,
         "score": 0,
         "subject": subject,
         "mode": context.user_data.get("mode"),
-        "chat_id": query.message.chat_id
+        "chat_id": query.message.chat_id,
+        "current_poll_id": None  # સુધારો: Poll ID ટ્રેક કરવા માટે
     }
 
     await query.edit_message_text("🚀 ક્વિઝ શરૂ થઈ રહી છે...")
@@ -187,7 +190,7 @@ async def send_poll_question(context, user_id):
         open_period = None
 
     try:
-        poll = await context.bot.send_poll(
+        poll_msg = await context.bot.send_poll(
             chat_id=s["chat_id"],
             question=f"Q{s['qno']+1}. {q['question']}",
             options=q["options"],
@@ -197,17 +200,24 @@ async def send_poll_question(context, user_id):
             open_period=open_period
         )
 
+        # સુધારો: હાલના Poll નો ID સેવ કરો
+        s["current_poll_id"] = poll_msg.poll.id
+
         if open_period:
-            asyncio.create_task(auto_next(context, user_id, open_period, s["qno"]))
+            asyncio.create_task(auto_next(context, user_id, open_period, s["qno"], s["quiz_id"]))
             
     except Exception as e:
         print(f"Error sending poll: {e}")
         await finish_quiz(context, user_id)
 
-async def auto_next(context, user_id, delay, expected_qno):
+async def auto_next(context, user_id, delay, expected_qno, quiz_id):
     await asyncio.sleep(delay + 1)
     s = user_sessions.get(user_id)
-    if not s: return
+    
+    # સુધારો: જો યુઝરે નવી ક્વિઝ ચાલુ કરી હોય, તો જૂનો ટાઈમર રદ કરો
+    if not s or s.get("quiz_id") != quiz_id: 
+        return
+        
     if s["qno"] == expected_qno:
         s["qno"] += 1
         await send_poll_question(context, user_id)
@@ -219,6 +229,10 @@ async def handle_poll_answer(update: Update, context):
     user_id = answer.user.id
     s = user_sessions.get(user_id)
     if not s: return
+
+    # સુધારો: જો યુઝર જૂના Poll નો જવાબ આપે તો ઈગ્નોર કરો
+    if answer.poll_id != s.get("current_poll_id"):
+        return
 
     selected = answer.option_ids[0]
     if s["qno"] < len(s["questions"]):
