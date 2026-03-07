@@ -43,6 +43,10 @@ def start(message):
 
     save_json("users.json", users)
 
+    # session reset
+    if message.from_user.id in user_sessions:
+        del user_sessions[message.from_user.id]
+
     markup = telebot.types.InlineKeyboardMarkup()
 
     for chapter in quiz_data.keys():
@@ -99,111 +103,150 @@ def select_chapter(call):
 @bot.callback_query_handler(func=lambda call: call.data.startswith("quiz"))
 def start_quiz(call):
 
-    count = int(call.data.split("|")[1])
+    try:
 
-    session = user_sessions.get(call.from_user.id)
+        count = int(call.data.split("|")[1])
 
-    chapter = session["chapter"]
+        session = user_sessions.get(call.from_user.id)
 
-    questions = quiz_data[chapter]
+        if not session:
+            bot.send_message(call.message.chat.id,"⚠️ Session expired. ફરી /start કરો.")
+            return
 
-    selected = random.sample(questions, min(count, len(questions)))
+        chapter = session["chapter"]
 
-    session["questions"] = selected
-    session["index"] = 0
-    session["score"] = 0
-    session["total"] = len(selected)
+        questions = quiz_data[chapter]
 
-    send_question(call.message.chat.id, call.from_user.id)
+        selected = random.sample(questions, min(count, len(questions)))
+
+        session["questions"] = selected
+        session["index"] = 0
+        session["score"] = 0
+        session["total"] = len(selected)
+        session["answered"] = False
+
+        send_question(call.message.chat.id, call.from_user.id)
+
+    except Exception as e:
+        print("Quiz start error:", e)
 
 # ---------------- SEND QUESTION ----------------
 
 def send_question(chat_id, user_id):
 
-    session = user_sessions[user_id]
+    try:
 
-    index = session["index"]
+        session = user_sessions.get(user_id)
 
-    if index >= session["total"]:
+        if not session:
+            bot.send_message(chat_id,"⚠️ Session expired. /start કરો.")
+            return
 
-        score = session["score"]
-        total = session["total"]
+        index = session["index"]
 
-        uid = str(user_id)
+        if index >= session["total"]:
 
-        results[uid] = {
-            "score": score,
-            "total": total
-        }
+            score = session["score"]
+            total = session["total"]
 
-        save_json("results.json", results)
+            uid = str(user_id)
 
-        leaderboard[uid] = score
+            results[uid] = {
+                "score": score,
+                "total": total
+            }
 
-        save_json("leaderboard.json", leaderboard)
+            save_json("results.json", results)
+
+            leaderboard[uid] = score
+
+            save_json("leaderboard.json", leaderboard)
+
+            markup = telebot.types.InlineKeyboardMarkup()
+
+            markup.add(
+                telebot.types.InlineKeyboardButton(
+                    "🔁 Restart Quiz",
+                    callback_data="restart"
+                )
+            )
+
+            bot.send_message(
+                chat_id,
+                f"🏁 Quiz Complete\n\n📊 Final Score: {score}/{total}",
+                reply_markup=markup
+            )
+
+            return
+
+        q = session["questions"][index]
 
         markup = telebot.types.InlineKeyboardMarkup()
 
-        markup.add(
-            telebot.types.InlineKeyboardButton(
-                "🔁 Restart Quiz",
-                callback_data="restart"
+        for option in q["options"]:
+
+            markup.add(
+                telebot.types.InlineKeyboardButton(
+                    option,
+                    callback_data=f"answer|{option}"
+                )
             )
-        )
+
+        session["answered"] = False
 
         bot.send_message(
             chat_id,
-            f"🏁 Quiz Complete\n\n📊 Final Score: {score}/{total}",
+            f"Q{index+1}. {q['question']}",
             reply_markup=markup
         )
 
-        return
-
-    q = session["questions"][index]
-
-    markup = telebot.types.InlineKeyboardMarkup()
-
-    for option in q["options"]:
-
-        markup.add(
-            telebot.types.InlineKeyboardButton(
-                option,
-                callback_data=f"answer|{option}"
-            )
-        )
-
-    bot.send_message(
-        chat_id,
-        f"Q{index+1}. {q['question']}",
-        reply_markup=markup
-    )
+    except Exception as e:
+        print("Send question error:", e)
 
 # ---------------- ANSWER ----------------
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("answer"))
 def answer(call):
 
-    user_id = call.from_user.id
+    try:
 
-    session = user_sessions[user_id]
+        user_id = call.from_user.id
 
-    index = session["index"]
+        session = user_sessions.get(user_id)
 
-    q = session["questions"][index]
+        if not session:
+            bot.send_message(call.message.chat.id,"⚠️ Session expired. /start કરો.")
+            return
 
-    selected = call.data.split("|")[1]
+        if session["answered"]:
+            return
 
-    if selected == q["answer"]:
-        session["score"] += 1
+        session["answered"] = True
 
-    session["index"] += 1
+        index = session["index"]
 
-    send_question(call.message.chat.id, user_id)
+        q = session["questions"][index]
+
+        selected = call.data.split("|")[1]
+
+        if selected == q["answer"]:
+            session["score"] += 1
+
+        session["index"] += 1
+
+        send_question(call.message.chat.id, user_id)
+
+    except Exception as e:
+        print("Answer error:", e)
 
 # ---------------- RESTART ----------------
 
 @bot.callback_query_handler(func=lambda call: call.data == "restart")
 def restart(call):
+
+    # session reset
+    if call.from_user.id in user_sessions:
+        del user_sessions[call.from_user.id]
 
     start(call.message)
 
