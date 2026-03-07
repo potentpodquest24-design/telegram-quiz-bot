@@ -1,236 +1,236 @@
+import telebot
 import json
 import random
 import os
-import asyncio
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    CallbackQueryHandler,
-    PollAnswerHandler,
-    ContextTypes
-)
+from flask import Flask, request
 
 TOKEN = os.getenv("BOT_TOKEN")
 
-with open("quiz_data.json") as f:
-    quiz_data = json.load(f)
+bot = telebot.TeleBot(TOKEN)
 
-user_state = {}
+app = Flask(__name__)
 
-# ---------------- START ---------------- #
+# ---------------- FILE LOAD ----------------
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def load_json(file):
+    try:
+        with open(file, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except:
+        return {}
 
-    keyboard=[]
+def save_json(file, data):
+    with open(file, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4, ensure_ascii=False)
 
-    for subject in quiz_data:
-        keyboard.append(
-            [InlineKeyboardButton(subject,callback_data=f"subject|{subject}")]
+quiz_data = load_json("quiz_data.json")
+users = load_json("users.json")
+leaderboard = load_json("leaderboard.json")
+results = load_json("results.json")
+
+user_sessions = {}
+
+# ---------------- START ----------------
+
+@bot.message_handler(commands=["start"])
+def start(message):
+
+    user_id = str(message.from_user.id)
+
+    users[user_id] = {
+        "name": message.from_user.first_name
+    }
+
+    save_json("users.json", users)
+
+    markup = telebot.types.InlineKeyboardMarkup()
+
+    for chapter in quiz_data.keys():
+
+        markup.add(
+            telebot.types.InlineKeyboardButton(
+                chapter,
+                callback_data=f"chapter|{chapter}"
+            )
         )
 
-    await update.message.reply_text(
-        "📚 Subject પસંદ કરો",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+    bot.send_message(
+        message.chat.id,
+        "📚 Chapter પસંદ કરો",
+        reply_markup=markup
     )
 
+# ---------------- CHAPTER SELECT ----------------
 
-# ---------------- BUTTONS ---------------- #
+@bot.callback_query_handler(func=lambda call: call.data.startswith("chapter"))
+def select_chapter(call):
 
-async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chapter = call.data.split("|")[1]
 
-    query=update.callback_query
-    await query.answer()
+    user_sessions[call.from_user.id] = {
+        "chapter": chapter
+    }
 
-    data=query.data.split("|")
+    markup = telebot.types.InlineKeyboardMarkup(row_width=3)
 
-# SUBJECT
+    buttons = [10,20,30,40,50,60]
 
-    if data[0]=="subject":
+    btn = []
 
-        subject=data[1]
-
-        keyboard=[]
-
-        for chapter in quiz_data[subject]:
-
-            keyboard.append([
-                InlineKeyboardButton(
-                    chapter,
-                    callback_data=f"chapter|{subject}|{chapter}"
-                )
-            ])
-
-        await query.edit_message_text(
-            "📖 Chapter પસંદ કરો",
-            reply_markup=InlineKeyboardMarkup(keyboard)
+    for b in buttons:
+        btn.append(
+            telebot.types.InlineKeyboardButton(
+                str(b),
+                callback_data=f"quiz|{b}"
+            )
         )
 
-# CHAPTER
+    markup.add(*btn)
 
-    elif data[0]=="chapter":
+    bot.edit_message_text(
+        "❓ કેટલા Question જોઈએ?",
+        call.message.chat.id,
+        call.message.message_id,
+        reply_markup=markup
+    )
 
-        subject=data[1]
-        chapter=data[2]
+# ---------------- QUIZ START ----------------
 
-        keyboard=[
-            [InlineKeyboardButton("10",callback_data=f"count|{subject}|{chapter}|10")],
-            [InlineKeyboardButton("20",callback_data=f"count|{subject}|{chapter}|20")],
-            [InlineKeyboardButton("30",callback_data=f"count|{subject}|{chapter}|30")],
-            [InlineKeyboardButton("40",callback_data=f"count|{subject}|{chapter}|40")],
-            [InlineKeyboardButton("50",callback_data=f"count|{subject}|{chapter}|50")],
-            [InlineKeyboardButton("60",callback_data=f"count|{subject}|{chapter}|60")]
-        ]
+@bot.callback_query_handler(func=lambda call: call.data.startswith("quiz"))
+def start_quiz(call):
 
-        await query.edit_message_text(
-            "📊 કેટલા Question જોઈએ?",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
+    count = int(call.data.split("|")[1])
 
-# QUESTION COUNT
+    session = user_sessions.get(call.from_user.id)
 
-    elif data[0]=="count":
+    chapter = session["chapter"]
 
-        subject=data[1]
-        chapter=data[2]
-        count=int(data[3])
+    questions = quiz_data[chapter]
 
-        keyboard=[
-            [InlineKeyboardButton("Without Time",callback_data=f"mode|{subject}|{chapter}|{count}|0")],
-            [InlineKeyboardButton("60 Second",callback_data=f"mode|{subject}|{chapter}|{count}|60")],
-            [InlineKeyboardButton("80 Second",callback_data=f"mode|{subject}|{chapter}|{count}|80")]
-        ]
+    selected = random.sample(questions, min(count, len(questions)))
 
-        await query.edit_message_text(
-            "⏱ Quiz Mode પસંદ કરો",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
+    session["questions"] = selected
+    session["index"] = 0
+    session["score"] = 0
+    session["total"] = len(selected)
 
+    send_question(call.message.chat.id, call.from_user.id)
 
-# MODE SELECT
+# ---------------- SEND QUESTION ----------------
 
-    elif data[0]=="mode":
+def send_question(chat_id, user_id):
 
-        subject=data[1]
-        chapter=data[2]
-        count=int(data[3])
-        timer=int(data[4])
+    session = user_sessions[user_id]
 
-        questions=quiz_data[subject][chapter]
-        random.shuffle(questions)
+    index = session["index"]
 
-        user_state[query.from_user.id]={
-            "questions":questions[:count],
-            "index":0,
-            "timer":timer
+    if index >= session["total"]:
+
+        score = session["score"]
+        total = session["total"]
+
+        uid = str(user_id)
+
+        results[uid] = {
+            "score": score,
+            "total": total
         }
 
-        await send_question(query.from_user.id,context)
+        save_json("results.json", results)
 
+        leaderboard[uid] = score
 
-# ---------------- SEND QUESTION ---------------- #
+        save_json("leaderboard.json", leaderboard)
 
-async def send_question(user_id,context):
+        markup = telebot.types.InlineKeyboardMarkup()
 
-    state=user_state[user_id]
+        markup.add(
+            telebot.types.InlineKeyboardButton(
+                "🔁 Restart Quiz",
+                callback_data="restart"
+            )
+        )
 
-    if state["index"]>=len(state["questions"]):
-
-        keyboard=[[InlineKeyboardButton("🔄 Restart",callback_data="restart")]]
-
-        await context.bot.send_message(
-            chat_id=user_id,
-            text="✅ Quiz Finished",
-            reply_markup=InlineKeyboardMarkup(keyboard)
+        bot.send_message(
+            chat_id,
+            f"🏁 Quiz Complete\n\n📊 Final Score: {score}/{total}",
+            reply_markup=markup
         )
 
         return
 
-    q=state["questions"][state["index"]]
+    q = session["questions"][index]
 
-    timer=state["timer"]
+    markup = telebot.types.InlineKeyboardMarkup()
 
-    if timer==0:
+    for option in q["options"]:
 
-        poll=await context.bot.send_poll(
-            chat_id=user_id,
-            question=q["question"],
-            options=q["options"],
-            type="quiz",
-            correct_option_id=q["answer"],
-            is_anonymous=False
+        markup.add(
+            telebot.types.InlineKeyboardButton(
+                option,
+                callback_data=f"answer|{option}"
+            )
         )
 
-    else:
+    bot.send_message(
+        chat_id,
+        f"Q{index+1}. {q['question']}",
+        reply_markup=markup
+    )
 
-        poll=await context.bot.send_poll(
-            chat_id=user_id,
-            question=q["question"],
-            options=q["options"],
-            type="quiz",
-            correct_option_id=q["answer"],
-            open_period=timer,
-            is_anonymous=False
-        )
+# ---------------- ANSWER ----------------
 
-        asyncio.create_task(auto_next(user_id,context,timer))
+@bot.callback_query_handler(func=lambda call: call.data.startswith("answer"))
+def answer(call):
 
-    state["poll_id"]=poll.poll.id
+    user_id = call.from_user.id
 
+    session = user_sessions[user_id]
 
-# -------- AUTO NEXT IF NO ANSWER -------- #
+    index = session["index"]
 
-async def auto_next(user_id,context,timer):
+    q = session["questions"][index]
 
-    await asyncio.sleep(timer+1)
+    selected = call.data.split("|")[1]
 
-    if user_id not in user_state:
-        return
+    if selected == q["answer"]:
+        session["score"] += 1
 
-    user_state[user_id]["index"]+=1
+    session["index"] += 1
 
-    await send_question(user_id,context)
+    send_question(call.message.chat.id, user_id)
 
+# ---------------- RESTART ----------------
 
-# -------- POLL ANSWER -------- #
+@bot.callback_query_handler(func=lambda call: call.data == "restart")
+def restart(call):
 
-async def poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    start(call.message)
 
-    user=update.poll_answer.user.id
+# ---------------- WEBHOOK ----------------
 
-    if user not in user_state:
-        return
+@app.route(f"/{TOKEN}", methods=["POST"])
+def webhook():
 
-    user_state[user]["index"]+=1
+    json_str = request.get_data().decode("UTF-8")
+    update = telebot.types.Update.de_json(json_str)
 
-    await send_question(user,context)
+    bot.process_new_updates([update])
 
+    return "OK", 200
 
-# -------- RESTART -------- #
+@app.route("/")
+def home():
+    return "Bot Running"
 
-async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ---------------- RUN ----------------
 
-    query=update.callback_query
-    await query.answer()
+if __name__ == "__main__":
 
-    await start(update,context)
+    bot.remove_webhook()
 
+    RENDER_URL = os.getenv("RENDER_EXTERNAL_URL")
 
-# ---------------- MAIN ---------------- #
+    bot.set_webhook(url=f"{RENDER_URL}/{TOKEN}")
 
-def main():
-
-    app=Application.builder().token(TOKEN).build()
-
-    app.add_handler(CommandHandler("start",start))
-    app.add_handler(CallbackQueryHandler(buttons))
-    app.add_handler(CallbackQueryHandler(restart,pattern="restart"))
-    app.add_handler(PollAnswerHandler(poll_answer))
-
-    print("Bot Running...")
-
-    app.run_polling()
-
-
-if __name__=="__main__":
-    main()
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
