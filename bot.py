@@ -10,7 +10,7 @@ bot = telebot.TeleBot(TOKEN)
 
 app = Flask(__name__)
 
-# ---------------- FILE LOAD ----------------
+# ---------- JSON LOAD ----------
 
 def load_json(file):
     try:
@@ -30,7 +30,7 @@ results = load_json("results.json")
 
 user_sessions = {}
 
-# ---------------- START ----------------
+# ---------- START ----------
 
 @bot.message_handler(commands=["start"])
 def start(message):
@@ -43,14 +43,12 @@ def start(message):
 
     save_json("users.json", users)
 
-    # session reset
     if message.from_user.id in user_sessions:
         del user_sessions[message.from_user.id]
 
     markup = telebot.types.InlineKeyboardMarkup()
 
     for chapter in quiz_data.keys():
-
         markup.add(
             telebot.types.InlineKeyboardButton(
                 chapter,
@@ -64,7 +62,7 @@ def start(message):
         reply_markup=markup
     )
 
-# ---------------- CHAPTER SELECT ----------------
+# ---------- CHAPTER SELECT ----------
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("chapter"))
 def select_chapter(call):
@@ -91,14 +89,13 @@ def select_chapter(call):
 
     markup.add(*btn)
 
-    bot.edit_message_text(
-        "❓ કેટલા Question જોઈએ?",
+    bot.send_message(
         call.message.chat.id,
-        call.message.message_id,
+        "❓ કેટલા Question જોઈએ?",
         reply_markup=markup
     )
 
-# ---------------- QUIZ START ----------------
+# ---------- QUIZ START ----------
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("quiz"))
 def start_quiz(call):
@@ -130,7 +127,7 @@ def start_quiz(call):
     except Exception as e:
         print("Quiz start error:", e)
 
-# ---------------- SEND QUESTION ----------------
+# ---------- SEND QUESTION ----------
 
 def send_question(chat_id, user_id):
 
@@ -184,7 +181,6 @@ def send_question(chat_id, user_id):
         markup = telebot.types.InlineKeyboardMarkup()
 
         for option in q["options"]:
-
             markup.add(
                 telebot.types.InlineKeyboardButton(
                     option,
@@ -203,7 +199,7 @@ def send_question(chat_id, user_id):
     except Exception as e:
         print("Send question error:", e)
 
-# ---------------- ANSWER ----------------
+# ---------- ANSWER ----------
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("answer"))
 def answer(call):
@@ -239,18 +235,17 @@ def answer(call):
     except Exception as e:
         print("Answer error:", e)
 
-# ---------------- RESTART ----------------
+# ---------- RESTART ----------
 
 @bot.callback_query_handler(func=lambda call: call.data == "restart")
 def restart(call):
 
-    # session reset
     if call.from_user.id in user_sessions:
         del user_sessions[call.from_user.id]
 
     start(call.message)
 
-# ---------------- WEBHOOK ----------------
+# ---------- WEBHOOK ----------
 
 @app.route(f"/{TOKEN}", methods=["POST"])
 def webhook():
@@ -266,7 +261,7 @@ def webhook():
 def home():
     return "Bot Running"
 
-# ---------------- RUN ----------------
+# ---------- RUN ----------
 
 if __name__ == "__main__":
 
