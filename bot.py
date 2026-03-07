@@ -1,53 +1,53 @@
 import json
+import random
 import os
-from flask import Flask
-from threading import Thread
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
-from dotenv import load_dotenv
-
-load_dotenv("my.env")
 
 TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID"))
 
-app = Flask(__name__)
+# -------- JSON LOAD -------- #
 
-@app.route("/")
-def home():
-    return "Quiz Bot Running"
+def load_json(file):
+    try:
+        with open(file) as f:
+            return json.load(f)
+    except:
+        return {}
+
+def save_json(file,data):
+    with open(file,"w") as f:
+        json.dump(data,f,indent=4)
+
+quiz_data = load_json("quiz_data.json")
+users = load_json("users.json")
+results = load_json("results.json")
+leaderboard = load_json("leaderboard.json")
+
+user_state = {}
 
 
-# ---------------- JSON LOAD ---------------- #
-
-def load_quiz():
-    with open("quiz_data.json") as f:
-        return json.load(f)
-
-quiz_data = load_quiz()
-
-
-# ---------------- START ---------------- #
+# -------- START -------- #
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    keyboard = []
+    user = str(update.effective_user.id)
+
+    users[user] = update.effective_user.first_name
+    save_json("users.json",users)
+
+    keyboard=[]
 
     for subject in quiz_data:
-        keyboard.append([
-            InlineKeyboardButton(subject, callback_data=f"subject|{subject}")
-        ])
-
-    if update.effective_user.id == ADMIN_ID:
-        keyboard.append([InlineKeyboardButton("⚙️ Admin Panel", callback_data="admin")])
+        keyboard.append([InlineKeyboardButton(subject,callback_data=f"subject|{subject}")])
 
     await update.message.reply_text(
-        "📚 Select Subject",
+        "📚 Subject પસંદ કરો",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 
-# ---------------- BUTTON ---------------- #
+# -------- BUTTONS -------- #
 
 async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
@@ -56,12 +56,13 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     data = query.data.split("|")
 
-    # SUBJECT
-    if data[0] == "subject":
+# SUBJECT
 
-        subject = data[1]
+    if data[0]=="subject":
 
-        keyboard = []
+        subject=data[1]
+
+        keyboard=[]
 
         for chapter in quiz_data[subject]:
             keyboard.append([
@@ -72,84 +73,140 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
 
         await query.edit_message_text(
-            f"📖 {subject} Chapters",
+            f"📖 {subject} Chapter પસંદ કરો",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
-    # CHAPTER
-    elif data[0] == "chapter":
+# CHAPTER
 
-        subject = data[1]
-        chapter = data[2]
+    elif data[0]=="chapter":
 
-        q = quiz_data[subject][chapter]["question"]
-        options = quiz_data[subject][chapter]["options"]
+        subject=data[1]
+        chapter=data[2]
 
-        keyboard = []
+        questions=quiz_data[subject][chapter]
 
-        for opt in options:
+        q=random.choice(questions)
+
+        user_state[query.from_user.id]={
+            "subject":subject,
+            "chapter":chapter,
+            "question":q
+        }
+
+        keyboard=[]
+
+        for i,opt in enumerate(q["options"]):
+
             keyboard.append([
                 InlineKeyboardButton(
                     opt,
-                    callback_data=f"answer|{subject}|{chapter}|{opt}"
+                    callback_data=f"answer|{i}"
                 )
             ])
 
         await query.edit_message_text(
-            q,
+            q["question"],
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
-    # ANSWER
-    elif data[0] == "answer":
+# ANSWER
 
-        subject = data[1]
-        chapter = data[2]
-        user_ans = data[3]
+    elif data[0]=="answer":
 
-        correct = quiz_data[subject][chapter]["answer"]
+        user=query.from_user.id
+        ans=int(data[1])
 
-        if user_ans == correct:
-            text = "✅ Correct Answer"
+        q=user_state[user]["question"]
+
+        correct=q["answer"]
+
+        if ans==correct:
+
+            text="✅ Correct"
+
+            results[str(user)]=results.get(str(user),0)+1
+
         else:
-            text = f"❌ Wrong\nCorrect: {correct}"
 
-        await query.edit_message_text(text)
+            text=f"❌ Wrong\nCorrect answer: {q['options'][correct]}"
 
-    # ADMIN
-    elif data[0] == "admin":
+        save_json("results.json",results)
 
-        if query.from_user.id != ADMIN_ID:
-            return
+# leaderboard update
 
-        keyboard = [
-            [InlineKeyboardButton("➕ Add Quiz (Soon)", callback_data="none")]
-        ]
+        leaderboard[str(user)]=results[str(user)]
+        save_json("leaderboard.json",leaderboard)
+
+        keyboard=[[InlineKeyboardButton("➡️ Next Question",callback_data="next")]]
 
         await query.edit_message_text(
-            "⚙️ Admin Panel",
+            text,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+# NEXT QUESTION
+
+    elif data[0]=="next":
+
+        user=query.from_user.id
+
+        subject=user_state[user]["subject"]
+        chapter=user_state[user]["chapter"]
+
+        questions=quiz_data[subject][chapter]
+
+        q=random.choice(questions)
+
+        user_state[user]["question"]=q
+
+        keyboard=[]
+
+        for i,opt in enumerate(q["options"]):
+
+            keyboard.append([
+                InlineKeyboardButton(
+                    opt,
+                    callback_data=f"answer|{i}"
+                )
+            ])
+
+        await query.edit_message_text(
+            q["question"],
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
 
-# ---------------- BOT START ---------------- #
+# -------- LEADERBOARD -------- #
 
-def run_bot():
+async def leaderboard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    application = Application.builder().token(TOKEN).build()
+    text="🏆 Leaderboard\n\n"
 
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CallbackQueryHandler(buttons))
+    sorted_lb=sorted(leaderboard.items(),key=lambda x:x[1],reverse=True)
 
-    application.run_polling()
+    for i,(uid,score) in enumerate(sorted_lb[:10]):
+
+        name=users.get(uid,"User")
+
+        text+=f"{i+1}. {name} - {score}\n"
+
+    await update.message.reply_text(text)
 
 
-# ---------------- MAIN ---------------- #
+# -------- MAIN -------- #
 
-if __name__ == "__main__":
+def main():
 
-    bot_thread = Thread(target=run_bot)
-    bot_thread.start()
+    app=Application.builder().token(TOKEN).build()
 
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    app.add_handler(CommandHandler("start",start))
+    app.add_handler(CommandHandler("leaderboard",leaderboard_cmd))
+    app.add_handler(CallbackQueryHandler(buttons))
+
+    print("Bot Running...")
+    app.run_polling()
+
+
+if __name__=="__main__":
+    main()
