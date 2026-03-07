@@ -1,45 +1,33 @@
 import json
 import random
 import os
+import asyncio
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    CallbackQueryHandler,
+    PollAnswerHandler,
+    ContextTypes
+)
 
 TOKEN = os.getenv("BOT_TOKEN")
 
-# -------- JSON LOAD -------- #
-
-def load_json(file):
-    try:
-        with open(file) as f:
-            return json.load(f)
-    except:
-        return {}
-
-def save_json(file,data):
-    with open(file,"w") as f:
-        json.dump(data,f,indent=4)
-
-quiz_data = load_json("quiz_data.json")
-users = load_json("users.json")
-results = load_json("results.json")
-leaderboard = load_json("leaderboard.json")
+with open("quiz_data.json") as f:
+    quiz_data = json.load(f)
 
 user_state = {}
 
-
-# -------- START -------- #
+# ---------------- START ---------------- #
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    user = str(update.effective_user.id)
-
-    users[user] = update.effective_user.first_name
-    save_json("users.json",users)
 
     keyboard=[]
 
     for subject in quiz_data:
-        keyboard.append([InlineKeyboardButton(subject,callback_data=f"subject|{subject}")])
+        keyboard.append(
+            [InlineKeyboardButton(subject,callback_data=f"subject|{subject}")]
+        )
 
     await update.message.reply_text(
         "📚 Subject પસંદ કરો",
@@ -47,14 +35,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# -------- BUTTONS -------- #
+# ---------------- BUTTONS ---------------- #
 
 async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    query = update.callback_query
+    query=update.callback_query
     await query.answer()
 
-    data = query.data.split("|")
+    data=query.data.split("|")
 
 # SUBJECT
 
@@ -65,6 +53,7 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard=[]
 
         for chapter in quiz_data[subject]:
+
             keyboard.append([
                 InlineKeyboardButton(
                     chapter,
@@ -73,7 +62,7 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
 
         await query.edit_message_text(
-            f"📖 {subject} Chapter પસંદ કરો",
+            "📖 Chapter પસંદ કરો",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
@@ -84,127 +73,162 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         subject=data[1]
         chapter=data[2]
 
-        questions=quiz_data[subject][chapter]
+        keyboard=[
+            [InlineKeyboardButton("10",callback_data=f"count|{subject}|{chapter}|10")],
+            [InlineKeyboardButton("20",callback_data=f"count|{subject}|{chapter}|20")],
+            [InlineKeyboardButton("30",callback_data=f"count|{subject}|{chapter}|30")],
+            [InlineKeyboardButton("40",callback_data=f"count|{subject}|{chapter}|40")],
+            [InlineKeyboardButton("50",callback_data=f"count|{subject}|{chapter}|50")],
+            [InlineKeyboardButton("60",callback_data=f"count|{subject}|{chapter}|60")]
+        ]
 
-        q=random.choice(questions)
+        await query.edit_message_text(
+            "📊 કેટલા Question જોઈએ?",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+# QUESTION COUNT
+
+    elif data[0]=="count":
+
+        subject=data[1]
+        chapter=data[2]
+        count=int(data[3])
+
+        keyboard=[
+            [InlineKeyboardButton("Without Time",callback_data=f"mode|{subject}|{chapter}|{count}|0")],
+            [InlineKeyboardButton("60 Second",callback_data=f"mode|{subject}|{chapter}|{count}|60")],
+            [InlineKeyboardButton("80 Second",callback_data=f"mode|{subject}|{chapter}|{count}|80")]
+        ]
+
+        await query.edit_message_text(
+            "⏱ Quiz Mode પસંદ કરો",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+
+# MODE SELECT
+
+    elif data[0]=="mode":
+
+        subject=data[1]
+        chapter=data[2]
+        count=int(data[3])
+        timer=int(data[4])
+
+        questions=quiz_data[subject][chapter]
+        random.shuffle(questions)
 
         user_state[query.from_user.id]={
-            "subject":subject,
-            "chapter":chapter,
-            "question":q
+            "questions":questions[:count],
+            "index":0,
+            "timer":timer
         }
 
-        keyboard=[]
+        await send_question(query.from_user.id,context)
 
-        for i,opt in enumerate(q["options"]):
 
-            keyboard.append([
-                InlineKeyboardButton(
-                    opt,
-                    callback_data=f"answer|{i}"
-                )
-            ])
+# ---------------- SEND QUESTION ---------------- #
 
-        await query.edit_message_text(
-            q["question"],
+async def send_question(user_id,context):
+
+    state=user_state[user_id]
+
+    if state["index"]>=len(state["questions"]):
+
+        keyboard=[[InlineKeyboardButton("🔄 Restart",callback_data="restart")]]
+
+        await context.bot.send_message(
+            chat_id=user_id,
+            text="✅ Quiz Finished",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
-# ANSWER
+        return
 
-    elif data[0]=="answer":
+    q=state["questions"][state["index"]]
 
-        user=query.from_user.id
-        ans=int(data[1])
+    timer=state["timer"]
 
-        q=user_state[user]["question"]
+    if timer==0:
 
-        correct=q["answer"]
-
-        if ans==correct:
-
-            text="✅ Correct"
-
-            results[str(user)]=results.get(str(user),0)+1
-
-        else:
-
-            text=f"❌ Wrong\nCorrect answer: {q['options'][correct]}"
-
-        save_json("results.json",results)
-
-# leaderboard update
-
-        leaderboard[str(user)]=results[str(user)]
-        save_json("leaderboard.json",leaderboard)
-
-        keyboard=[[InlineKeyboardButton("➡️ Next Question",callback_data="next")]]
-
-        await query.edit_message_text(
-            text,
-            reply_markup=InlineKeyboardMarkup(keyboard)
+        poll=await context.bot.send_poll(
+            chat_id=user_id,
+            question=q["question"],
+            options=q["options"],
+            type="quiz",
+            correct_option_id=q["answer"],
+            is_anonymous=False
         )
 
-# NEXT QUESTION
+    else:
 
-    elif data[0]=="next":
-
-        user=query.from_user.id
-
-        subject=user_state[user]["subject"]
-        chapter=user_state[user]["chapter"]
-
-        questions=quiz_data[subject][chapter]
-
-        q=random.choice(questions)
-
-        user_state[user]["question"]=q
-
-        keyboard=[]
-
-        for i,opt in enumerate(q["options"]):
-
-            keyboard.append([
-                InlineKeyboardButton(
-                    opt,
-                    callback_data=f"answer|{i}"
-                )
-            ])
-
-        await query.edit_message_text(
-            q["question"],
-            reply_markup=InlineKeyboardMarkup(keyboard)
+        poll=await context.bot.send_poll(
+            chat_id=user_id,
+            question=q["question"],
+            options=q["options"],
+            type="quiz",
+            correct_option_id=q["answer"],
+            open_period=timer,
+            is_anonymous=False
         )
 
+        asyncio.create_task(auto_next(user_id,context,timer))
 
-# -------- LEADERBOARD -------- #
-
-async def leaderboard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    text="🏆 Leaderboard\n\n"
-
-    sorted_lb=sorted(leaderboard.items(),key=lambda x:x[1],reverse=True)
-
-    for i,(uid,score) in enumerate(sorted_lb[:10]):
-
-        name=users.get(uid,"User")
-
-        text+=f"{i+1}. {name} - {score}\n"
-
-    await update.message.reply_text(text)
+    state["poll_id"]=poll.poll.id
 
 
-# -------- MAIN -------- #
+# -------- AUTO NEXT IF NO ANSWER -------- #
+
+async def auto_next(user_id,context,timer):
+
+    await asyncio.sleep(timer+1)
+
+    if user_id not in user_state:
+        return
+
+    user_state[user_id]["index"]+=1
+
+    await send_question(user_id,context)
+
+
+# -------- POLL ANSWER -------- #
+
+async def poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    user=update.poll_answer.user.id
+
+    if user not in user_state:
+        return
+
+    user_state[user]["index"]+=1
+
+    await send_question(user,context)
+
+
+# -------- RESTART -------- #
+
+async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    query=update.callback_query
+    await query.answer()
+
+    await start(update,context)
+
+
+# ---------------- MAIN ---------------- #
 
 def main():
 
     app=Application.builder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start",start))
-    app.add_handler(CommandHandler("leaderboard",leaderboard_cmd))
     app.add_handler(CallbackQueryHandler(buttons))
+    app.add_handler(CallbackQueryHandler(restart,pattern="restart"))
+    app.add_handler(PollAnswerHandler(poll_answer))
 
     print("Bot Running...")
+
     app.run_polling()
 
 
