@@ -20,7 +20,8 @@ with open("quiz_data.json", "r", encoding="utf-8") as f:
 
 user_sessions = {}
 users = set()
-timers = {}  # ટાઈમર રાખવા માટે નવી ડિક્શનરી
+timers = {}  # ટાઈમર રાખવા માટે ડિક્શનરી
+user_pools = {}  # 🆕 યુઝરના બાકી રહેલા પ્રશ્નોનું રેકોર્ડ રાખવા માટે (મેમરીમાં જ રહેશે)
 
 # START
 @bot.message_handler(commands=['start'])
@@ -61,20 +62,49 @@ def count(call):
     )
     bot.edit_message_text("⏱ Select Time", call.message.chat.id, call.message.message_id, reply_markup=kb)
 
-# TIME SELECT
+# 🆕 TIME SELECT (અહીં ફેરફાર કરેલ છે જેથી પ્રશ્નો રિપીટ ન થાય)
 @bot.callback_query_handler(func=lambda c: c.data.startswith("time|"))
 def time_select(call):
-    subject, chapter, count, time = call.data.split("|")[1:]
-    questions = data[subject][chapter]
-    random.shuffle(questions)
-    selected = questions[:int(count)]
-    user_sessions[call.message.chat.id] = {
-        "questions": selected,
+    chat_id = call.message.chat.id
+    subject, chapter, count_str, time_str = call.data.split("|")[1:]
+    
+    requested_count = int(count_str)
+    time_limit = int(time_str)
+    pool_key = f"{subject}|{chapter}"
+
+    # યુઝર માટે પૂલ બનાવો (જો ન હોય તો)
+    if chat_id not in user_pools:
+        user_pools[chat_id] = {}
+
+    # જો પ્રશ્નો પૂરા થઈ ગયા હોય અથવા પહેલી વાર રમતા હોય, તો નવા પ્રશ્નો કોપી કરો
+    if pool_key not in user_pools[chat_id] or len(user_pools[chat_id][pool_key]) == 0:
+        user_pools[chat_id][pool_key] = data[subject][chapter].copy()
+        random.shuffle(user_pools[chat_id][pool_key])
+        
+        # જો બીજી વાર બધું પૂરું થઈને રીસેટ થતું હોય તો યુઝરને જાણ કરો
+        if pool_key in user_pools[chat_id] and len(user_pools[chat_id][pool_key]) > 0:
+            pass # પહેલી વાર માટે કશું કહેવાની જરૂર નથી
+
+    # પૂલમાંથી પ્રશ્નો કાઢો (જેટલા માંગ્યા હોય તેટલા, અથવા જેટલા વધ્યા હોય તેટલા)
+    available = len(user_pools[chat_id][pool_key])
+    take_count = min(requested_count, available)
+    
+    selected_questions = []
+    for _ in range(take_count):
+        # pop(0) કરવાથી પ્રશ્ન લિસ્ટમાંથી કાયમ માટે નીકળી જશે 
+        selected_questions.append(user_pools[chat_id][pool_key].pop(0))
+
+    if len(selected_questions) < requested_count:
+        bot.send_message(chat_id, f"ℹ️ આ ચેપ્ટરમાં હવે માત્ર {len(selected_questions)} પ્રશ્નો જ બાકી રહ્યા હતા. તે પૂરા થયા પછી પ્રશ્નો ઓટોમેટિક નવા આવી જશે.")
+
+    user_sessions[chat_id] = {
+        "questions": selected_questions,
         "index": 0,
         "score": 0,
-        "time": int(time)
+        "time": time_limit
     }
-    send_question(call.message.chat.id)
+    
+    send_question(chat_id)
 
 # SEND QUESTION
 def send_question(chat_id):
