@@ -1,274 +1,126 @@
 import telebot
-import json
-import random
 import os
-from flask import Flask, request
+from dotenv import load_dotenv
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
+# ENV
+load_dotenv()
 TOKEN = os.getenv("BOT_TOKEN")
 
 bot = telebot.TeleBot(TOKEN)
 
-app = Flask(__name__)
+# USER SESSION
+user_data = {}
 
-# ---------- JSON LOAD ----------
-
-def load_json(file):
-    try:
-        with open(file, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except:
-        return {}
-
-def save_json(file, data):
-    with open(file, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=4, ensure_ascii=False)
-
-quiz_data = load_json("quiz_data.json")
-users = load_json("users.json")
-leaderboard = load_json("leaderboard.json")
-results = load_json("results.json")
-
-user_sessions = {}
-
-# ---------- START ----------
-
-@bot.message_handler(commands=["start"])
+# START
+@bot.message_handler(commands=['start'])
 def start(message):
+    keyboard = InlineKeyboardMarkup()
+    keyboard.add(InlineKeyboardButton("Maths", callback_data="subject_maths"))
+    bot.send_message(message.chat.id, "Select Subject", reply_markup=keyboard)
 
-    user_id = str(message.from_user.id)
-
-    users[user_id] = {
-        "name": message.from_user.first_name
-    }
-
-    save_json("users.json", users)
-
-    if message.from_user.id in user_sessions:
-        del user_sessions[message.from_user.id]
-
-    markup = telebot.types.InlineKeyboardMarkup()
-
-    for chapter in quiz_data.keys():
-        markup.add(
-            telebot.types.InlineKeyboardButton(
-                chapter,
-                callback_data=f"chapter|{chapter}"
-            )
-        )
-
-    bot.send_message(
-        message.chat.id,
-        "📚 Chapter પસંદ કરો",
-        reply_markup=markup
+# SUBJECT
+@bot.callback_query_handler(func=lambda call: call.data.startswith("subject"))
+def subject(call):
+    keyboard = InlineKeyboardMarkup()
+    keyboard.add(
+        InlineKeyboardButton("Chapter 1", callback_data="chapter_1"),
+        InlineKeyboardButton("Chapter 2", callback_data="chapter_2")
     )
+    bot.edit_message_text("Select Chapter", call.message.chat.id, call.message.message_id, reply_markup=keyboard)
 
-# ---------- CHAPTER SELECT ----------
-
+# CHAPTER
 @bot.callback_query_handler(func=lambda call: call.data.startswith("chapter"))
-def select_chapter(call):
+def chapter(call):
+    keyboard = InlineKeyboardMarkup()
+    keyboard.add(
+        InlineKeyboardButton("10", callback_data="q_10"),
+        InlineKeyboardButton("20", callback_data="q_20"),
+        InlineKeyboardButton("30", callback_data="q_30")
+    )
+    bot.edit_message_text("Select Number of Questions", call.message.chat.id, call.message.message_id, reply_markup=keyboard)
 
-    chapter = call.data.split("|")[1]
-
-    user_sessions[call.from_user.id] = {
-        "chapter": chapter
+# QUESTION NUMBER
+@bot.callback_query_handler(func=lambda call: call.data.startswith("q_"))
+def question(call):
+    q_no = int(call.data.split("_")[1])
+    
+    # Session Initialize
+    user_data[call.message.chat.id] = {
+        "total": q_no,
+        "current": 0,
+        "score": 0
     }
 
-    markup = telebot.types.InlineKeyboardMarkup(row_width=3)
+    # સીધી ક્વિઝ શરૂ કરો (ટાઈમર વગર)
+    bot.answer_callback_query(call.id, "Quiz Starting...")
+    send_question(call.message.chat.id)
 
-    buttons = [10,20,30,40,50,60]
+# SEND QUESTION
+def send_question(chat_id):
+    try:
+        data = user_data.get(chat_id)
+        if not data: return
 
-    btn = []
+        if data["current"] >= data["total"]:
+            finish_quiz(chat_id)
+            return
 
-    for b in buttons:
-        btn.append(
-            telebot.types.InlineKeyboardButton(
-                str(b),
-                callback_data=f"quiz|{b}"
-            )
+        data["current"] += 1
+        q_no = data["current"]
+
+        keyboard = InlineKeyboardMarkup()
+        # પ્રશ્ન ક્રમાંક સાથે callback_data મોકલો જેથી સાચો જવાબ ટ્રેક થાય
+        keyboard.add(
+            InlineKeyboardButton("3", callback_data=f"ans_3_{q_no}"),
+            InlineKeyboardButton("4", callback_data=f"ans_4_{q_no}")
         )
-
-    markup.add(*btn)
-
-    bot.send_message(
-        call.message.chat.id,
-        "❓ કેટલા Question જોઈએ?",
-        reply_markup=markup
-    )
-
-# ---------- QUIZ START ----------
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("quiz"))
-def start_quiz(call):
-
-    try:
-
-        count = int(call.data.split("|")[1])
-
-        session = user_sessions.get(call.from_user.id)
-
-        if not session:
-            bot.send_message(call.message.chat.id,"⚠️ Session expired. ફરી /start કરો.")
-            return
-
-        chapter = session["chapter"]
-
-        questions = quiz_data[chapter]
-
-        selected = random.sample(questions, min(count, len(questions)))
-
-        session["questions"] = selected
-        session["index"] = 0
-        session["score"] = 0
-        session["total"] = len(selected)
-        session["answered"] = False
-
-        send_question(call.message.chat.id, call.from_user.id)
-
-    except Exception as e:
-        print("Quiz start error:", e)
-
-# ---------- SEND QUESTION ----------
-
-def send_question(chat_id, user_id):
-
-    try:
-
-        session = user_sessions.get(user_id)
-
-        if not session:
-            bot.send_message(chat_id,"⚠️ Session expired. /start કરો.")
-            return
-
-        index = session["index"]
-
-        if index >= session["total"]:
-
-            score = session["score"]
-            total = session["total"]
-
-            uid = str(user_id)
-
-            results[uid] = {
-                "score": score,
-                "total": total
-            }
-
-            save_json("results.json", results)
-
-            leaderboard[uid] = score
-
-            save_json("leaderboard.json", leaderboard)
-
-            markup = telebot.types.InlineKeyboardMarkup()
-
-            markup.add(
-                telebot.types.InlineKeyboardButton(
-                    "🔁 Restart Quiz",
-                    callback_data="restart"
-                )
-            )
-
-            bot.send_message(
-                chat_id,
-                f"🏁 Quiz Complete\n\n📊 Final Score: {score}/{total}",
-                reply_markup=markup
-            )
-
-            return
-
-        q = session["questions"][index]
-
-        markup = telebot.types.InlineKeyboardMarkup()
-
-        for option in q["options"]:
-            markup.add(
-                telebot.types.InlineKeyboardButton(
-                    option,
-                    callback_data=f"answer|{option}"
-                )
-            )
-
-        session["answered"] = False
 
         bot.send_message(
             chat_id,
-            f"Q{index+1}. {q['question']}",
-            reply_markup=markup
+            f"Question {q_no}/{data['total']}\n\n2 + 2 = ?",
+            reply_markup=keyboard
         )
 
     except Exception as e:
-        print("Send question error:", e)
+        print("Error:", e)
 
-# ---------- ANSWER ----------
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("answer"))
+# ANSWER
+@bot.callback_query_handler(func=lambda call: call.data.startswith("ans_"))
 def answer(call):
+    chat_id = call.message.chat.id
+    data_parts = call.data.split("_")
+    ans = data_parts[1]
+    q_answered = int(data_parts[2])
 
-    try:
+    # જો યુઝર ડેટા નથી અથવા જૂના પ્રશ્નનો જવાબ આપે છે તો ઇગ્નોર કરો
+    if chat_id not in user_data or user_data[chat_id]["current"] != q_answered:
+        bot.answer_callback_query(call.id, "Session expired or already answered.")
+        return
 
-        user_id = call.from_user.id
+    # સાચો જવાબ ચેક કરો
+    if ans == "4":
+        user_data[chat_id]["score"] += 1
+        bot.answer_callback_query(call.id, "Correct! ✅")
+    else:
+        bot.answer_callback_query(call.id, "Wrong! ❌")
 
-        session = user_sessions.get(user_id)
+    # બટન દૂર કરો જેથી ફરી ક્લિક ના થાય
+    bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=None)
+    
+    # આગલો પ્રશ્ન મોકલો
+    send_question(chat_id)
 
-        if not session:
-            bot.send_message(call.message.chat.id,"⚠️ Session expired. /start કરો.")
-            return
+# FINISH
+def finish_quiz(chat_id):
+    data = user_data.get(chat_id)
+    if data:
+        bot.send_message(
+            chat_id,
+            f"🎊 Quiz Finished!\n\n✅ Final Score: {data['score']}/{data['total']}"
+        )
+        user_data.pop(chat_id, None)
 
-        if session["answered"]:
-            return
-
-        session["answered"] = True
-
-        index = session["index"]
-
-        q = session["questions"][index]
-
-        selected = call.data.split("|")[1]
-
-        if selected == q["answer"]:
-            session["score"] += 1
-
-        session["index"] += 1
-
-        send_question(call.message.chat.id, user_id)
-
-    except Exception as e:
-        print("Answer error:", e)
-
-# ---------- RESTART ----------
-
-@bot.callback_query_handler(func=lambda call: call.data == "restart")
-def restart(call):
-
-    if call.from_user.id in user_sessions:
-        del user_sessions[call.from_user.id]
-
-    start(call.message)
-
-# ---------- WEBHOOK ----------
-
-@app.route(f"/{TOKEN}", methods=["POST"])
-def webhook():
-
-    json_str = request.get_data().decode("UTF-8")
-    update = telebot.types.Update.de_json(json_str)
-
-    bot.process_new_updates([update])
-
-    return "OK", 200
-
-@app.route("/")
-def home():
-    return "Bot Running"
-
-# ---------- RUN ----------
-
-if __name__ == "__main__":
-
-    bot.remove_webhook()
-
-    RENDER_URL = os.getenv("RENDER_EXTERNAL_URL")
-
-    bot.set_webhook(url=f"{RENDER_URL}/{TOKEN}")
-
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+# RUN
+print("Bot Running on Render...")
+bot.infinity_polling()
