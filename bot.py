@@ -1,30 +1,25 @@
 import telebot
+import json
 import os
-import random
 from dotenv import load_dotenv
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from flask import Flask
 import threading
+import random
 
-# ENV LOAD
 load_dotenv()
 
-TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID"))
+TOKEN=os.getenv("BOT_TOKEN")
+ADMIN_ID=int(os.getenv("ADMIN_ID"))
 
-bot = telebot.TeleBot(TOKEN)
+bot=telebot.TeleBot(TOKEN)
 
+# load questions
+with open("quiz_data.json","r",encoding="utf-8") as f:
+    data=json.load(f)
+
+user_sessions={}
 users=set()
-user_data={}
-
-# SAMPLE QUESTIONS
-questions=[
-("2 + 2 = ?",["3","4","5"],"4"),
-("5 + 3 = ?",["7","8","9"],"8"),
-("10 - 4 = ?",["6","5","4"],"6"),
-("3 × 3 = ?",["6","9","12"],"9"),
-("12 / 3 = ?",["2","4","6"],"4"),
-]
 
 # START
 @bot.message_handler(commands=['start'])
@@ -32,62 +27,87 @@ def start(message):
 
     users.add(message.chat.id)
 
-    keyboard=InlineKeyboardMarkup()
-    keyboard.add(
-        InlineKeyboardButton("🎯 Start Quiz",callback_data="start_quiz")
-    )
+    kb=InlineKeyboardMarkup()
 
-    keyboard.add(
-        InlineKeyboardButton("ℹ️ Help",callback_data="help")
-    )
+    for subject in data.keys():
+        kb.add(InlineKeyboardButton(subject,callback_data=f"sub|{subject}"))
 
-    bot.send_message(
-        message.chat.id,
-        "👋 Welcome to Quiz Bot\n\nTest your knowledge and improve your skills!",
-        reply_markup=keyboard
-    )
+    bot.send_message(message.chat.id,"📚 Select Subject",reply_markup=kb)
 
-# HELP
-@bot.callback_query_handler(func=lambda call: call.data=="help")
-def help_msg(call):
+# SUBJECT
+@bot.callback_query_handler(func=lambda c:c.data.startswith("sub|"))
+def subject(call):
 
-    bot.send_message(
+    subject=call.data.split("|")[1]
+
+    kb=InlineKeyboardMarkup()
+
+    for chapter in data[subject].keys():
+        kb.add(InlineKeyboardButton(chapter,callback_data=f"chap|{subject}|{chapter}"))
+
+    bot.edit_message_text(
+        "📖 Select Chapter",
         call.message.chat.id,
-        "📚 Quiz Bot Help\n\nSelect quiz and answer questions."
+        call.message.message_id,
+        reply_markup=kb
     )
 
-# START QUIZ
-@bot.callback_query_handler(func=lambda call: call.data=="start_quiz")
-def quiz_menu(call):
+# CHAPTER
+@bot.callback_query_handler(func=lambda c:c.data.startswith("chap|"))
+def chapter(call):
 
-    keyboard=InlineKeyboardMarkup()
-    keyboard.add(
-        InlineKeyboardButton("10 Questions",callback_data="q10")
+    subject,chapter=call.data.split("|")[1:]
+
+    kb=InlineKeyboardMarkup()
+
+    for n in [10,20,30,40,50,60]:
+        kb.add(InlineKeyboardButton(str(n),callback_data=f"count|{subject}|{chapter}|{n}"))
+
+    bot.edit_message_text(
+        "🔢 કેટલા પ્રશ્ન?",
+        call.message.chat.id,
+        call.message.message_id,
+        reply_markup=kb
     )
-    keyboard.add(
-        InlineKeyboardButton("20 Questions",callback_data="q20")
-    )
-    keyboard.add(
-        InlineKeyboardButton("30 Questions",callback_data="q30")
+
+# QUESTION COUNT
+@bot.callback_query_handler(func=lambda c:c.data.startswith("count|"))
+def count(call):
+
+    subject,chapter,count=call.data.split("|")[1:]
+
+    kb=InlineKeyboardMarkup()
+
+    kb.add(InlineKeyboardButton("Without Time",callback_data=f"time|{subject}|{chapter}|{count}|0"))
+    kb.add(
+        InlineKeyboardButton("60 sec",callback_data=f"time|{subject}|{chapter}|{count}|60"),
+        InlineKeyboardButton("80 sec",callback_data=f"time|{subject}|{chapter}|{count}|80")
     )
 
     bot.edit_message_text(
-        "Select number of questions:",
+        "⏱ Select Time",
         call.message.chat.id,
         call.message.message_id,
-        reply_markup=keyboard
+        reply_markup=kb
     )
 
-# SELECT QUESTION COUNT
-@bot.callback_query_handler(func=lambda call: call.data.startswith("q"))
-def start_questions(call):
+# TIME SELECT
+@bot.callback_query_handler(func=lambda c:c.data.startswith("time|"))
+def time_select(call):
 
-    total=int(call.data.replace("q",""))
+    subject,chapter,count,time=call.data.split("|")[1:]
 
-    user_data[call.message.chat.id]={
+    questions=data[subject][chapter]
+
+    random.shuffle(questions)
+
+    selected=questions[:int(count)]
+
+    user_sessions[call.message.chat.id]={
+        "questions":selected,
+        "index":0,
         "score":0,
-        "current":0,
-        "total":total
+        "time":int(time)
     }
 
     send_question(call.message.chat.id)
@@ -95,102 +115,85 @@ def start_questions(call):
 # SEND QUESTION
 def send_question(chat_id):
 
-    data=user_data[chat_id]
+    session=user_sessions[chat_id]
 
-    if data["current"]>=data["total"]:
-        finish_quiz(chat_id)
+    if session["index"]>=len(session["questions"]):
+        finish(chat_id)
         return
 
-    q=random.choice(questions)
+    q=session["questions"][session["index"]]
 
-    data["answer"]=q[2]
-
-    keyboard=InlineKeyboardMarkup()
-
-    for opt in q[1]:
-        keyboard.add(
-            InlineKeyboardButton(opt,callback_data=f"ans_{opt}")
-        )
-
-    bot.send_message(
+    msg=bot.send_poll(
         chat_id,
-        f"❓ Question {data['current']+1}\n\n{q[0]}",
-        reply_markup=keyboard
+        q["question"],
+        q["options"],
+        type="quiz",
+        correct_option_id=q["answer"],
+        is_anonymous=False,
+        open_period=session["time"] if session["time"]!=0 else None
     )
 
-    data["current"]+=1
+    session["poll_id"]=msg.poll.id
+    session["index"]+=1
 
 # ANSWER
-@bot.callback_query_handler(func=lambda call: call.data.startswith("ans"))
-def answer(call):
+@bot.poll_answer_handler()
+def answer(poll):
 
-    ans=call.data.replace("ans_","")
+    for chat_id,session in user_sessions.items():
 
-    data=user_data[call.message.chat.id]
+        if session.get("poll_id")==poll.poll_id:
 
-    if ans==data["answer"]:
-        data["score"]+=1
+            q=session["questions"][session["index"]-1]
 
-    send_question(call.message.chat.id)
+            if poll.option_ids[0]==q["answer"]:
+                session["score"]+=1
 
-# FINISH QUIZ
-def finish_quiz(chat_id):
+            send_question(chat_id)
+            break
 
-    data=user_data[chat_id]
+# FINISH
+def finish(chat_id):
 
-    score=data["score"]
-    total=data["total"]
+    s=user_sessions[chat_id]
 
-    keyboard=InlineKeyboardMarkup()
-    keyboard.add(
-        InlineKeyboardButton("🔁 Restart Quiz",callback_data="start_quiz")
-    )
+    kb=InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("🔁 Restart",callback_data="restart"))
 
     bot.send_message(
         chat_id,
         f"""
 🎉 Quiz Completed!
 
-🏆 Your Score: {score} / {total}
+🏆 Score : {s['score']} / {len(s['questions'])}
 
-👏 Great job!
-Keep learning and try again to improve your score.
+👏 સરસ પ્રયાસ!
+દરરોજ practice કરો અને વધુ શીખો.
+
+👇 ફરીથી શરૂ કરવા માટે button દબાવો
 """,
-        reply_markup=keyboard
+        reply_markup=kb
     )
 
-# ADMIN PANEL
+# RESTART
+@bot.callback_query_handler(func=lambda c:c.data=="restart")
+def restart(call):
+
+    start(call.message)
+
+# ADMIN
 @bot.message_handler(commands=['admin'])
-def admin_panel(message):
+def admin(message):
 
     if message.chat.id!=ADMIN_ID:
         return
 
-    keyboard=InlineKeyboardMarkup()
-
-    keyboard.add(
-        InlineKeyboardButton("📊 Total Users",callback_data="users")
-    )
-
     bot.send_message(
         message.chat.id,
-        "Admin Panel",
-        reply_markup=keyboard
+        f"👥 Total Users : {len(users)}"
     )
 
-# TOTAL USERS
-@bot.callback_query_handler(func=lambda call: call.data=="users")
-def total_users(call):
-
-    if call.message.chat.id!=ADMIN_ID:
-        return
-
-    bot.send_message(
-        call.message.chat.id,
-        f"👥 Total Users: {len(users)}"
-    )
-
-# FLASK KEEP ALIVE (Render)
+# KEEP ALIVE
 app=Flask(__name__)
 
 @app.route('/')
@@ -198,14 +201,10 @@ def home():
     return "Bot Running"
 
 def run():
-    app.run(host='0.0.0.0',port=10000)
+    app.run(host="0.0.0.0",port=10000)
 
-def keep_alive():
-    t=threading.Thread(target=run)
-    t.start()
+threading.Thread(target=run).start()
 
-keep_alive()
-
-print("Bot Running...")
+print("Bot started")
 
 bot.infinity_polling()
